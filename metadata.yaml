@@ -1,6 +1,6 @@
 name: astrbot_plugin_genie-tts
-desc: 基于 Genie TTS Gateway 的语音合成（颜文字/情绪路由/层叠音色）
-help: gentts help。情绪识别参考 realistic-persona（关键词+LLM混合）。
-version: v2.2.1
+desc: 基于 Genie TTS Gateway 的语音合成（分类配置/分段TTS/情绪路由/层叠音色）
+help: gentts help。配置分简易/完整模式；完整模式含 gateway/voices/emotion/filter/split/warmup/trigger。
+version: v2.3.0
 author: victical
 repo: https://github.com/Qiscard/astrbot_plugin_genie-tts

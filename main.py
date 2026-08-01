@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AstrBot Genie-TTS v2.2: Gateway / warmup / kaomoji / LLM emotion / cascaded voices."""
+"""AstrBot Genie-TTS v2.3: 分类配置 / 分段TTS / 预热降级 / 情绪路由 / 层叠音色。"""
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +14,7 @@ from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
 from astrbot.core.message.message_event_result import ResultContentType
@@ -29,7 +29,7 @@ except ImportError:
     logger.warning("[GenieTTS] pydub 未安装，静音裁剪不可用")
 
 DEFAULT_KAOMOJI_PATTERNS = [
-    r"[（(][^（()]*[）)]",
+    r"[（(][^（）()]*[）)]",
     r"[＞>][＿_][＜<]",
     r"[＾^][＿_][＾^]",
     r"[oO][＿_][oO]",
@@ -74,6 +74,22 @@ SEMANTIC_HINTS.update({
     "温柔": EMOTION_ALIASES[EmotionType.CALM],
     "默认": EMOTION_ALIASES[EmotionType.CALM],
 })
+
+
+try:
+    from .split_util import (
+        DEFAULT_SPLIT_CHARS,
+        calc_delay,
+        clean_items,
+        split_text as split_plain_text,
+    )
+except ImportError:
+    from split_util import (
+        DEFAULT_SPLIT_CHARS,
+        calc_delay,
+        clean_items,
+        split_text as split_plain_text,
+    )
 
 
 EMOJI_RE = re.compile(
@@ -159,7 +175,7 @@ class SessionState:
     "genie-tts",
     "victical",
     "基于 Genie TTS Gateway 的语音合成插件",
-    "2.2.1",
+    "2.3.0",
     "https://github.com/Qiscard/astrbot_plugin_genie-tts",
 )
 class GenieTTSPlugin(Star):
@@ -190,83 +206,179 @@ class GenieTTSPlugin(Star):
         self._repeat_regex: Optional[re.Pattern] = None
         self._replacements: Dict[str, str] = {}
         self._apply_runtime_config()
-        logger.info(f"[GenieTTS] init base={self.base_url} char={self.character} voices={len(self.voices)} emo_detect={self.emotion_detect_enabled}")
+        logger.info(f"[GenieTTS] init mode={self.config_mode} base={self.base_url} char={self.character} split={self.split_enabled} emo={self.emotion_detect_enabled} voices={len(self.voices)}")
+
+
+    def _cat(self, *names: str) -> dict:
+        for name in names:
+            obj = self.config.get(name)
+            if isinstance(obj, dict):
+                return obj
+        return {}
+
+
+    def _get_cfg(self, key: str, default=None, *cats: str):
+        """按分类读取配置。指定 cats 时只在这些分类中查找，避免 enabled/timeout 串读。"""
+        if getattr(self, "_simple_overrides", None) and key in self._simple_overrides:
+            return self._simple_overrides[key]
+        search = cats if cats else (
+            "gateway", "filter", "split", "warmup", "trigger",
+            "emotion_detect", "model_select", "text_process", "simple_settings",
+        )
+        for cat in search:
+            obj = self.config.get(cat)
+            if isinstance(obj, dict) and key in obj and obj.get(key) is not None:
+                return obj[key]
+        if key in self.config and self.config.get(key) is not None:
+            return self.config.get(key)
+        return default
+
+
+    def _apply_simple_overrides(self) -> None:
+        s = self._cat('simple_settings')
+        o = {
+            'character': s.get('character', self.config.get('character', 'lxh')),
+            'emotion_detect_enabled': _as_bool(s.get('enable_emotion', True), True),
+            'split_enabled': _as_bool(s.get('enable_split', True), True),
+            'max_segments': _as_int(s.get('max_segments', 5), 5),
+            'send_speed': s.get('send_speed', '自然'),
+            'warmup_mode': _as_bool(s.get('enable_warmup', True), True),
+            'text_limit': _as_int(s.get('text_limit', 300), 300),
+            'enable_auto_tts': _as_bool(s.get('enable_auto_tts', True), True),
+            'tts_each_segment': True,
+            'prob': 1.0,
+            'cooldown': 0,
+            'global_enable': True,
+            'split_chars': list(DEFAULT_SPLIT_CHARS),
+            'min_segment_length': 8,
+            'protect_pairs': True,
+        }
+        en_f = _as_bool(s.get('enable_filter', True), True)
+        for k in ('filter_code', 'filter_emoji', 'filter_url', 'filter_markdown', 'filter_kaomoji'):
+            o[k] = en_f
+        self._simple_overrides = o
+
 
     def _apply_runtime_config(self) -> None:
+        """读取配置：支持简易/完整模式，兼容旧扁平字段。"""
+        self.config_mode = str(self.config.get("config_mode", "简易模式") or "简易模式")
+        self._is_simple = self.config_mode == "简易模式"
+        self._simple_overrides = {}
+        if self._is_simple:
+            self._apply_simple_overrides()
+
         raw_base = self.config.get("base_url") or self.config.get("server_host") or "http://127.0.0.1:19880"
         self.base_url = self._normalize_base_url(str(raw_base), self.config.get("server_port"))
         self.api_key = str(self.config.get("api_key", "") or "").strip()
-        self.character = str(self.config.get("character") or self.config.get("character_name") or "lxh").strip()
-        self.language = str(self.config.get("language", "zh") or "zh").strip().lower()
-        if self.language not in {"zh", "en", "hybrid"}: self.language = "zh"
-        self.emotion_id = _as_int(self.config.get("emotion_id", 0), 0)
-        emotion = str(self.config.get("emotion", "") or "").strip()
-        if emotion in {"0", "none", "null", "default"}: emotion = ""
+
+        # gateway / 基础
+        self.character = str(self._get_cfg("character", self.config.get("character") or self.config.get("character_name") or "lxh", "gateway", "simple_settings") or "lxh").strip()
+        self.language = str(self._get_cfg("language", self.config.get("language", "zh"), "gateway") or "zh").strip().lower()
+        if self.language not in {"zh", "en", "hybrid"}:
+            self.language = "zh"
+        self.emotion_id = _as_int(self._get_cfg("emotion_id", self.config.get("emotion_id", 0), "gateway"), 0)
+        emotion = str(self._get_cfg("emotion", self.config.get("emotion", ""), "gateway") or "").strip()
+        if emotion in {"0", "none", "null", "default"}:
+            emotion = ""
         self.emotion = emotion
 
         voices = self.config.get("voices", [])
         self.voices: List[Dict[str, Any]] = list(voices) if isinstance(voices, list) else []
 
-        self.auto_sync_voices = _as_bool(_cfg_get(self.config, "auto_sync_voices", True, ("model_select", "auto_sync_voices")), True)
-        self.auto_select_emotion = _as_bool(_cfg_get(self.config, "auto_select_emotion", True, ("model_select", "auto_select_emotion")), True)
-        self.overwrite_on_sync = _as_bool(_cfg_get(self.config, "overwrite_on_sync", False, ("model_select", "overwrite_on_sync")), False)
+        self.auto_sync_voices = _as_bool(self._get_cfg("auto_sync_voices", True, "model_select"), True)
+        self.auto_select_emotion = _as_bool(self._get_cfg("auto_select_emotion", True, "model_select"), True)
+        self.overwrite_on_sync = _as_bool(self._get_cfg("overwrite_on_sync", False, "model_select"), False)
 
-        self.emotion_detect_enabled = _as_bool(_cfg_get(self.config, "emotion_detect_enabled", True, ("emotion_detect", "enabled")), True)
-        self.emotion_provider_id = str(_cfg_get(self.config, "emotion_provider_id", "", ("emotion_detect", "provider_id")) or "").strip()
-        self.emotion_labels = str(_cfg_get(self.config, "emotion_labels", DEFAULT_EMOTION_LABELS, ("emotion_detect", "labels")) or DEFAULT_EMOTION_LABELS)
-        self.emotion_timeout = max(3, _as_int(_cfg_get(self.config, "emotion_timeout", 12, ("emotion_detect", "timeout")), 12))
-        self.emotion_fallback = str(_cfg_get(self.config, "emotion_fallback", "默认", ("emotion_detect", "fallback_label")) or "默认")
-        # keyword | llm | hybrid（参考 realistic-persona：关键词为主，LLM 兜底）
-        mode = str(_cfg_get(self.config, "emotion_mode", "hybrid", ("emotion_detect", "mode")) or "hybrid").strip().lower()
+        self.emotion_detect_enabled = _as_bool(self._get_cfg("enabled", True, "emotion_detect"), True)
+        # 兼容旧字段 emotion_detect_enabled
+        if "emotion_detect_enabled" in self.config and not isinstance(self.config.get("emotion_detect"), dict):
+            self.emotion_detect_enabled = _as_bool(self.config.get("emotion_detect_enabled"), self.emotion_detect_enabled)
+        self.emotion_provider_id = str(self._get_cfg("provider_id", "", "emotion_detect") or "").strip()
+        self.emotion_labels = str(self._get_cfg("labels", DEFAULT_EMOTION_LABELS, "emotion_detect") or DEFAULT_EMOTION_LABELS)
+        ed = self._cat("emotion_detect")
+        self.emotion_timeout = max(3, _as_int(ed.get("timeout", 12), 12))
+        self.emotion_fallback = str(self._get_cfg("fallback_label", "默认", "emotion_detect") or "默认")
+        mode = str(self._get_cfg("mode", "hybrid", "emotion_detect") or "hybrid").strip().lower()
         if mode not in {"keyword", "llm", "hybrid"}:
             mode = "hybrid"
         self.emotion_mode = mode
-        self.emotion_keyword_threshold = _as_float(
-            _cfg_get(self.config, "emotion_keyword_threshold", 0.55, ("emotion_detect", "keyword_threshold")),
-            0.55,
-        )
-        self.emotion_smooth = _as_bool(
-            _cfg_get(self.config, "emotion_smooth", True, ("emotion_detect", "smooth")),
-            True,
-        )
+        self.emotion_keyword_threshold = _as_float(self._get_cfg("keyword_threshold", 0.55, "emotion_detect"), 0.55)
+        self.emotion_smooth = _as_bool(self._get_cfg("smooth", True, "emotion_detect"), True)
 
-        self.split_sentence = _as_bool(self.config.get("split_sentence", True), True)
-        self.save_on_server = _as_bool(self.config.get("save_on_server", False), False)
-        self.timeout = max(10, _as_int(self.config.get("timeout", 300), 300))
-        self.retry_attempts = max(0, _as_int(self.config.get("retry_attempts", 3), 3))
-        self.global_enable = _as_bool(self.config.get("global_enable", True), True)
-        self.prob = _as_float(self.config.get("prob", 1.0), 1.0)
-        self.text_limit = _as_int(self.config.get("text_limit", 200), 200)
-        self.cooldown = _as_int(self.config.get("cooldown", 0), 0)
+        self.split_sentence = _as_bool(self._get_cfg("split_sentence", True, "gateway"), True)
+        self.save_on_server = _as_bool(self._get_cfg("save_on_server", False, "gateway"), False)
+        # HTTP 超时只读 gateway，避免与 emotion_detect.timeout 串读
+        gw = self._cat("gateway")
+        self.timeout = max(10, _as_int(gw.get("timeout", self.config.get("timeout", 300)), 300))
+        self.retry_attempts = max(0, _as_int(self._get_cfg("retry_attempts", 3, "gateway"), 3))
+        self.auto_check_on_start = _as_bool(self._get_cfg("auto_check_on_start", True, "gateway"), True)
 
-        self.filter_code = _as_bool(_cfg_get(self.config, "filter_code", True, ("text_process", "filter_code")), True)
-        self.filter_emoji = _as_bool(_cfg_get(self.config, "filter_emoji", True, ("text_process", "filter_emoji")), True)
-        self.filter_url = _as_bool(_cfg_get(self.config, "filter_url", True, ("text_process", "filter_url")), True)
-        self.filter_markdown = _as_bool(_cfg_get(self.config, "filter_markdown", True, ("text_process", "filter_markdown")), True)
-        self.filter_kaomoji = _as_bool(_cfg_get(self.config, "filter_kaomoji", True, ("text_process", "filter_kaomoji")), True)
-        self.trim_silence = _as_bool(_cfg_get(self.config, "trim_silence", True, ("text_process", "trim_silence")), True)
-        self.replace_text = _as_bool(_cfg_get(self.config, "replace_text", True, ("text_process", "replace_text")), True)
-        self.send_text_with_audio = _as_bool(_cfg_get(self.config, "send_text_with_audio", False, ("text_process", "send_text_with_audio")), False)
+        # trigger
+        self.global_enable = _as_bool(self._get_cfg("global_enable", True, "trigger"), True)
+        self.prob = _as_float(self._get_cfg("prob", 1.0, "trigger"), 1.0)
+        self.text_limit = _as_int(self._get_cfg("text_limit", 300, "trigger", "simple_settings"), 300)
+        self.cooldown = _as_int(self._get_cfg("cooldown", 0, "trigger"), 0)
 
-        patterns = _cfg_get(self.config, "kaomoji_patterns", DEFAULT_KAOMOJI_PATTERNS, ("text_process", "kaomoji_patterns")) or DEFAULT_KAOMOJI_PATTERNS
-        words = _cfg_get(self.config, "kaomoji_words", DEFAULT_KAOMOJI_WORDS, ("text_process", "kaomoji_words")) or DEFAULT_KAOMOJI_WORDS
-        repl = _cfg_get(self.config, "replacement_words", DEFAULT_REPLACEMENTS, ("text_process", "replacement_words")) or DEFAULT_REPLACEMENTS
+        # filter（合并旧 text_process）
+        self.filter_code = _as_bool(self._get_cfg("filter_code", True, "filter", "text_process"), True)
+        self.filter_emoji = _as_bool(self._get_cfg("filter_emoji", True, "filter", "text_process"), True)
+        self.filter_url = _as_bool(self._get_cfg("filter_url", True, "filter", "text_process"), True)
+        self.filter_markdown = _as_bool(self._get_cfg("filter_markdown", True, "filter", "text_process"), True)
+        self.filter_kaomoji = _as_bool(self._get_cfg("filter_kaomoji", True, "filter", "text_process"), True)
+        self.trim_silence = _as_bool(self._get_cfg("trim_silence", True, "filter", "text_process"), True)
+        self.replace_text = _as_bool(self._get_cfg("replace_text", True, "filter", "text_process"), True)
+        self.send_text_with_audio = _as_bool(self._get_cfg("send_text_with_audio", False, "filter", "text_process"), False)
+        self.clean_before_items = [str(x) for x in (self._get_cfg("clean_before_items", [], "filter", "text_process") or [])]
+        patterns = self._get_cfg("kaomoji_patterns", DEFAULT_KAOMOJI_PATTERNS, "filter", "text_process") or DEFAULT_KAOMOJI_PATTERNS
+        words = self._get_cfg("kaomoji_words", DEFAULT_KAOMOJI_WORDS, "filter", "text_process") or DEFAULT_KAOMOJI_WORDS
+        repl = self._get_cfg("replacement_words", DEFAULT_REPLACEMENTS, "filter", "text_process") or DEFAULT_REPLACEMENTS
         self.kaomoji_words = [str(x) for x in words]
-        self.max_repeat_count = _as_int(_cfg_get(self.config, "max_repeat_count", 2, ("text_process", "max_repeat_count")), 2)
+        self.max_repeat_count = _as_int(self._get_cfg("max_repeat_count", 2, "filter", "text_process"), 2)
         self._replacements = _parse_replacements([str(x) for x in repl])
         self._kaomoji_regex = []
         for p in patterns:
-            try: self._kaomoji_regex.append(re.compile(str(p)))
-            except re.error as e: logger.warning(f"[GenieTTS] 无效颜文字正则 {p}: {e}")
-        if self.max_repeat_count > 0:
-            self._repeat_regex = re.compile(rf"(.)\1{{{self.max_repeat_count},}}")
-        else:
-            self._repeat_regex = None
+            try:
+                self._kaomoji_regex.append(re.compile(str(p)))
+            except re.error as e:
+                logger.warning(f"[GenieTTS] 无效颜文字正则 {p}: {e}")
+        self._repeat_regex = re.compile(rf"(.)\1{{{self.max_repeat_count},}}") if self.max_repeat_count > 0 else None
 
-        self.warmup_mode = _as_bool(_cfg_get(self.config, "warmup_mode", True, ("warmup", "enabled")), True)
-        self.warmup_tip = _as_bool(_cfg_get(self.config, "warmup_tip", False, ("warmup", "show_tip")), False)
-        self.warmup_status_ttl = max(3, _as_int(_cfg_get(self.config, "warmup_status_ttl", 8, ("warmup", "status_ttl")), 8))
-        self.auto_check_on_start = _as_bool(self.config.get("auto_check_on_start", True), True)
+        # warmup
+        self.warmup_mode = _as_bool(self._get_cfg("enabled", True, "warmup"), True)
+        if "warmup_mode" in self.config:
+            self.warmup_mode = _as_bool(self.config.get("warmup_mode"), self.warmup_mode)
+        self.warmup_tip = _as_bool(self._get_cfg("show_tip", False, "warmup"), False)
+        self.warmup_status_ttl = max(3, _as_int(self._get_cfg("status_ttl", 8, "warmup"), 8))
+
+        # split（借鉴 splitter 精简版）
+        self.split_enabled = _as_bool(self._get_cfg("enabled", True, "split"), True)
+        self.max_segments = max(1, _as_int(self._get_cfg("max_segments", 5, "split", "simple_settings"), 5))
+        self.min_segment_length = max(1, _as_int(self._get_cfg("min_segment_length", 8, "split"), 8))
+        sc = self._get_cfg("split_chars", DEFAULT_SPLIT_CHARS, "split") or DEFAULT_SPLIT_CHARS
+        self.split_chars = list(sc) if isinstance(sc, (list, tuple)) else list(DEFAULT_SPLIT_CHARS)
+        self.protect_pairs = _as_bool(self._get_cfg("protect_pairs", True, "split"), True)
+        self.send_speed = str(self._get_cfg("send_speed", "自然", "split", "simple_settings") or "自然")
+        self.tts_each_segment = _as_bool(self._get_cfg("tts_each_segment", True, "split"), True)
+        self.enable_auto_tts = True
+
+        # 简易模式覆盖
+        if self._is_simple:
+            sm = self._cat("simple_settings")
+            self.character = str(sm.get("character", self.character) or self.character)
+            self.enable_auto_tts = _as_bool(sm.get("enable_auto_tts", True), True)
+            self.emotion_detect_enabled = _as_bool(sm.get("enable_emotion", True), True)
+            self.split_enabled = _as_bool(sm.get("enable_split", True), True)
+            self.max_segments = max(1, _as_int(sm.get("max_segments", self.max_segments), self.max_segments))
+            self.send_speed = str(sm.get("send_speed", self.send_speed) or self.send_speed)
+            self.warmup_mode = _as_bool(sm.get("enable_warmup", True), True)
+            self.text_limit = _as_int(sm.get("text_limit", self.text_limit), self.text_limit)
+            en_f = _as_bool(sm.get("enable_filter", True), True)
+            self.filter_code = self.filter_emoji = self.filter_url = self.filter_markdown = self.filter_kaomoji = en_f
+            self.prob = 1.0
+            self.cooldown = 0
+            self.global_enable = True
+            self.tts_each_segment = True
+
 
     @staticmethod
     def _normalize_base_url(host_or_url: str, port: Any = None) -> str:
@@ -291,16 +403,19 @@ class GenieTTSPlugin(Star):
         return value.rstrip("/")
 
     def _auth_headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        headers = {"Accept": "*/*", "User-Agent": "AstrBot-GenieTTS/2.2.1"}
+        headers = {"Accept": "*/*", "User-Agent": "AstrBot-GenieTTS/2.3"}
         if self.api_key: headers["X-API-Key"] = self.api_key
         if extra: headers.update(extra)
         return headers
 
+
     def _persist(self) -> None:
-        """写入 AstrBot 插件配置文件。"""
+        """写入 AstrBot 插件配置文件（分类结构 + 兼容旧字段）。"""
         try:
+            self.config["config_mode"] = getattr(self, "config_mode", self.config.get("config_mode", "简易模式"))
             self.config["base_url"] = self.base_url
             self.config["api_key"] = self.api_key
+            # 兼容顶层字段
             self.config["character"] = self.character
             self.config["language"] = self.language
             self.config["emotion_id"] = self.emotion_id
@@ -309,6 +424,18 @@ class GenieTTSPlugin(Star):
             self.config["global_enable"] = self.global_enable
             self.config["enabled_sessions"] = self.enabled_sessions
             self.config["disabled_sessions"] = self.disabled_sessions
+
+            self.config["gateway"] = {
+                "character": self.character,
+                "language": self.language,
+                "emotion_id": self.emotion_id,
+                "emotion": self.emotion,
+                "split_sentence": self.split_sentence,
+                "save_on_server": self.save_on_server,
+                "timeout": self.timeout,
+                "retry_attempts": self.retry_attempts,
+                "auto_check_on_start": self.auto_check_on_start,
+            }
             self.config["model_select"] = {
                 "auto_sync_voices": self.auto_sync_voices,
                 "auto_select_emotion": self.auto_select_emotion,
@@ -324,30 +451,60 @@ class GenieTTSPlugin(Star):
                 "keyword_threshold": self.emotion_keyword_threshold,
                 "smooth": self.emotion_smooth,
             }
-            self.config["warmup"] = {
-                "enabled": self.warmup_mode,
-                "show_tip": self.warmup_tip,
-                "status_ttl": self.warmup_status_ttl,
-            }
-            tp = self.config.get("text_process") if isinstance(self.config.get("text_process"), dict) else {}
-            tp.update({
+            self.config["filter"] = {
                 "filter_code": self.filter_code,
                 "filter_emoji": self.filter_emoji,
                 "filter_url": self.filter_url,
                 "filter_markdown": self.filter_markdown,
                 "filter_kaomoji": self.filter_kaomoji,
+                "clean_before_items": self.clean_before_items,
+                "replacement_words": [f"{k}|{v}" for k, v in self._replacements.items()] or DEFAULT_REPLACEMENTS,
+                "kaomoji_words": self.kaomoji_words,
+                "max_repeat_count": self.max_repeat_count,
                 "trim_silence": self.trim_silence,
                 "replace_text": self.replace_text,
                 "send_text_with_audio": self.send_text_with_audio,
-                "max_repeat_count": self.max_repeat_count,
-            })
-            self.config["text_process"] = tp
+            }
+            # 兼容旧 text_process
+            self.config["text_process"] = dict(self.config["filter"])
+            self.config["split"] = {
+                "enabled": self.split_enabled,
+                "max_segments": self.max_segments,
+                "min_segment_length": self.min_segment_length,
+                "split_chars": self.split_chars,
+                "protect_pairs": self.protect_pairs,
+                "send_speed": self.send_speed,
+                "tts_each_segment": self.tts_each_segment,
+            }
+            self.config["warmup"] = {
+                "enabled": self.warmup_mode,
+                "show_tip": self.warmup_tip,
+                "status_ttl": self.warmup_status_ttl,
+            }
+            self.config["trigger"] = {
+                "global_enable": self.global_enable,
+                "prob": self.prob,
+                "text_limit": self.text_limit,
+                "cooldown": self.cooldown,
+            }
+            self.config["simple_settings"] = {
+                "character": self.character,
+                "enable_auto_tts": self.enable_auto_tts,
+                "enable_emotion": self.emotion_detect_enabled,
+                "enable_split": self.split_enabled,
+                "max_segments": self.max_segments,
+                "send_speed": self.send_speed,
+                "enable_filter": self.filter_kaomoji,
+                "enable_warmup": self.warmup_mode,
+                "text_limit": self.text_limit,
+            }
             if hasattr(self.config, "save_config"):
                 self.config.save_config()
             elif hasattr(self.config, "save"):
                 self.config.save()
         except Exception as e:
             logger.warning(f"[GenieTTS] 保存配置失败: {e}")
+
 
     def _save_config(self) -> None:
         self._persist()
@@ -688,10 +845,15 @@ class GenieTTSPlugin(Star):
             logger.warning(f"[GenieTTS] LLM 情绪识别失败: {e}")
         return ""
 
+
     def _clean_text(self, text: str) -> Tuple[str, List[str]]:
         references: List[str] = []
         cleaned = (text or "").strip()
-        if not cleaned: return "", references
+        if not cleaned:
+            return "", references
+        # 分段前清理词（借鉴 splitter）
+        if self.clean_before_items:
+            cleaned = clean_items(cleaned, self.clean_before_items)
         if self.filter_code:
             cleaned = CODE_BLOCK_RE.sub(" ", cleaned)
             cleaned = INLINE_CODE_RE.sub(" ", cleaned)
@@ -708,16 +870,19 @@ class GenieTTSPlugin(Star):
             for rgx in self._kaomoji_regex:
                 cleaned = rgx.sub("", cleaned)
             for word in self.kaomoji_words:
-                if word: cleaned = cleaned.replace(word, "")
-            for src, dst in self._replacements.items():
-                cleaned = cleaned.replace(src, dst)
-            if self._repeat_regex is not None:
-                cleaned = self._repeat_regex.sub(lambda m: m.group(1) * self.max_repeat_count, cleaned)
-            cleaned = re.sub(r"['""\u201c\u201d]\s*['""\u201c\u201d]", "", cleaned)
-            cleaned = re.sub(r"[,，、;；]\s*(?=[,，、;；\s])", "", cleaned)
-            cleaned = re.sub(r"^\s*[,，、;；]+|[,，、;；]+\s*$", "", cleaned)
+                if word:
+                    cleaned = cleaned.replace(word, "")
+        # 替换词独立于颜文字开关
+        for src_w, dst in self._replacements.items():
+            cleaned = cleaned.replace(src_w, dst)
+        if self._repeat_regex is not None:
+            cleaned = self._repeat_regex.sub(lambda m: m.group(1) * self.max_repeat_count, cleaned)
+        cleaned = re.sub(r"['\"“”]\s*['\"“”]", "", cleaned)
+        cleaned = re.sub(r"[,，。！？;；]\s*(?=[,，。！？;；\s])", "", cleaned)
+        cleaned = re.sub(r"^\s*[,，。！？;；]+|[,，。！？;；]+\s*$", "", cleaned)
         cleaned = MULTI_SPACE_RE.sub(" ", cleaned).strip(" \n\t\r-—_~")
         return cleaned, references
+
 
     def _sess_id(self, event: AstrMessageEvent) -> str:
         try:
@@ -977,73 +1142,162 @@ class GenieTTSPlugin(Star):
         raise RuntimeError(f"音频生成失败: {self._last_error}")
 
     @filter.on_decorating_result()
+
+    def _split_reply_text(self, text: str) -> List[str]:
+        if not self.split_enabled:
+            return [text] if text else []
+        return split_plain_text(
+            text,
+            split_chars=self.split_chars,
+            max_segments=self.max_segments,
+            min_segment_length=self.min_segment_length,
+            protect_pairs=self.protect_pairs,
+        )
+
+    async def _send_chain(self, event: AstrMessageEvent, components: List[Any]) -> None:
+        if not components:
+            return
+        mc = MessageChain()
+        mc.chain = list(components)
+        await self.context.send_message(event.unified_msg_origin, mc)
+
+    async def _build_tts_components(
+        self,
+        text: str,
+        *,
+        sid: str,
+        emotion_override: Optional[Tuple[int, str]] = None,
+        as_text_only: bool = False,
+    ) -> List[Any]:
+        """为单段文本构建消息组件。"""
+        if as_text_only or not text:
+            return [Comp.Plain(text)] if text else []
+        try:
+            audio_path = await self._generate_audio(text, sid=sid, emotion_override=emotion_override)
+            record = Comp.Record(file=audio_path, url=audio_path)
+            asyncio.create_task(self._cleanup_later(audio_path, 30.0))
+            comps: List[Any] = []
+            if self.replace_text:
+                comps.append(record)
+                if self.send_text_with_audio:
+                    comps.append(Comp.Plain(text))
+            else:
+                comps.append(record)
+                comps.append(Comp.Plain(text))
+            return comps
+        except Exception as e:
+            logger.warning(f"[GenieTTS] 分段合成失败，回退文本: {e}")
+            return [Comp.Plain(text)]
+
     async def on_decorating_result(self, event: AstrMessageEvent, *args):
         try:
-            if not self.api_key: return
-            sid = self._sess_id(event)
-            if not self._is_session_enabled(sid): return
+            if not self.api_key:
+                return
+            if not getattr(self, "enable_auto_tts", True):
+                return
             result = event.get_result()
-            if not result or not getattr(result, "chain", None): return
+            if not result or not getattr(result, "chain", None):
+                return
+            if getattr(result, "__genie_tts_processed", False):
+                return
+            if getattr(event, "__genie_tts_event_processed", False):
+                return
+            setattr(event, "__genie_tts_event_processed", True)
+            setattr(result, "__genie_tts_processed", True)
+
+            sid = self._sess_id(event)
+            if not self._is_session_enabled(sid):
+                return
+
             is_llm = False
-            try: is_llm = bool(result.is_llm_result())
+            try:
+                is_llm = bool(result.is_llm_result())
             except Exception:
                 is_llm = getattr(result, "result_content_type", None) == ResultContentType.LLM_RESULT
-            if not is_llm: return
+            if not is_llm:
+                return
 
             plain_indices: List[int] = []
             chunks: List[str] = []
             for i, component in enumerate(result.chain):
                 if isinstance(component, Comp.Plain):
-                    plain_indices.append(i); chunks.append(component.text or "")
+                    plain_indices.append(i)
+                    chunks.append(component.text or "")
             raw_text = " ".join(chunks).strip()
             cleaned, _ = self._clean_text(raw_text)
-            if not cleaned or len(cleaned) < 2: return
-            if random.random() > max(0.0, min(1.0, self.prob)): return
-            if self.text_limit > 0 and len(cleaned) > self.text_limit: return
+            if not cleaned or len(cleaned) < 2:
+                return
+            if random.random() > max(0.0, min(1.0, self.prob)):
+                return
+            if self.text_limit > 0 and len(cleaned) > self.text_limit:
+                return
             state = self._get_state(sid)
             now = time.time()
-            if self.cooldown > 0 and (now - state.last_tts_time) < self.cooldown: return
-
-            ready, warm_msg = await self._ensure_ready_or_warmup()
-            if not ready:
-                logger.info(f"[GenieTTS] warmup text fallback: {warm_msg}")
-                if self.warmup_tip and plain_indices:
-                    tip = f"\n\n⏳ {warm_msg}，预热完成后将恢复语音。"
-                    last_i = plain_indices[-1]
-                    try:
-                        old = result.chain[last_i].text or ""
-                        result.chain[last_i] = Comp.Plain(old + tip)
-                    except Exception:
-                        result.chain.append(Comp.Plain(tip))
+            if self.cooldown > 0 and (now - state.last_tts_time) < self.cooldown:
                 return
 
-            # LLM 情绪识别 -> 路由到音色映射
+            ready, warm_msg = await self._ensure_ready_or_warmup()
+            text_only = not ready
+            if text_only:
+                logger.info(f"[GenieTTS] warmup text fallback: {warm_msg}")
+
+            # 情绪只识别一次，应用到所有分段
             character = state.character or self.character
             emotion_override = None
-            if self.emotion_detect_enabled:
+            if self.emotion_detect_enabled and not text_only:
                 label = await self._detect_emotion_label(cleaned, character, sid=sid)
                 eid, ename, matched = self._resolve_emotion_from_label(character, label)
                 state.last_emotion_label = matched or label
                 emotion_override = (eid, ename)
                 logger.info(f"[GenieTTS] emotion detect label={label} -> {eid}:{ename}")
 
-            audio_path = await self._generate_audio(cleaned, sid=sid, emotion_override=emotion_override)
+            segments = self._split_reply_text(cleaned)
+            if not segments:
+                return
+            # 关闭分段 TTS 时：整段一次合成（仍可在预热期文本分段）
+            if (not self.tts_each_segment) and ready:
+                segments = [cleaned]
+
+            # 预热中：仅文本分段发送（模拟真人节奏）
+            if text_only:
+                if self.warmup_tip:
+                    segments[-1] = segments[-1] + f"\n\n⏳ {warm_msg}，预热完成后将恢复语音。"
+                for i in range(len(segments) - 1):
+                    await self._send_chain(event, [Comp.Plain(segments[i])])
+                    delay = calc_delay(segments[i + 1], self.send_speed)
+                    await asyncio.sleep(delay)
+                # 最后一段留给 result
+                result.chain.clear()
+                result.chain.append(Comp.Plain(segments[-1]))
+                state.last_tts_time = now
+                state.last_tts_text = cleaned
+                return
+
+            # 正常 TTS：前 n-1 段主动发送，最后一段交给框架
+            for i in range(len(segments) - 1):
+                comps = await self._build_tts_components(
+                    segments[i], sid=sid, emotion_override=emotion_override, as_text_only=False
+                )
+                await self._send_chain(event, comps)
+                delay = calc_delay(segments[i + 1], self.send_speed)
+                await asyncio.sleep(delay)
+
+            last = segments[-1]
+            last_comps = await self._build_tts_components(
+                last, sid=sid, emotion_override=emotion_override, as_text_only=False
+            )
+            result.chain.clear()
+            result.chain.extend(last_comps)
             state.last_tts_time = now
             state.last_tts_text = cleaned
-            record = Comp.Record(file=audio_path, url=audio_path)
-            if self.replace_text and plain_indices:
-                for idx in sorted(plain_indices, reverse=True): del result.chain[idx]
-                insert_at = plain_indices[0]
-                result.chain.insert(insert_at, record)
-                if self.send_text_with_audio: result.chain.insert(insert_at + 1, Comp.Plain(cleaned))
-            else:
-                result.chain.insert(0, record)
-            asyncio.create_task(self._cleanup_later(audio_path, 30.0))
         except Exception as e:
             logger.error(f"[GenieTTS] auto tts fail: {e}", exc_info=True)
             try:
-                if self.warmup_mode: self._start_warmup("tts-failed")
-            except Exception: pass
+                if self.warmup_mode:
+                    self._start_warmup("tts-failed")
+            except Exception:
+                pass
+
 
     @filter.command_group("gentts")
     def gentts_group(self):
@@ -1053,7 +1307,7 @@ class GenieTTSPlugin(Star):
     @gentts_group.command("help", alias={"帮助", "h", "?"})
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
-            "🎙️ Genie TTS v2.2\n"
+            "🎙️ Genie TTS v2.3\n"
             "gentts test/on/off/status\n"
             "gentts list / characters / emotions\n"
             "gentts use <角色> [情绪] / char / emo\n"
@@ -1093,6 +1347,24 @@ class GenieTTSPlugin(Star):
                 raw = raw[len(prefix):].strip(); break
         cleaned, _ = self._clean_text(raw)
         yield event.plain_result(f"原文({len(raw)}):\n{raw}\n\n过滤后({len(cleaned)}):\n{cleaned or '(空)'}")
+
+    
+    @gentts_group.command("split")
+    async def cmd_split(self, event: AstrMessageEvent):
+        """预览分段结果。"""
+        raw = (event.message_str or "").strip()
+        for prefix in ("gentts split", "/gentts split"):
+            if raw.lower().startswith(prefix):
+                raw = raw[len(prefix):].strip()
+                break
+        cleaned, _ = self._clean_text(raw or "你好。今天天气不错！要不要一起出去玩？")
+        segs = self._split_reply_text(cleaned)
+        lines = [f"✂️ 分段预览（{len(segs)} 段，速度={self.send_speed}）"]
+        for i, s in enumerate(segs, 1):
+            d = calc_delay(s, self.send_speed)
+            lines.append(f"{i}. ({len(s)}字/~{d:.1f}s) {s}")
+        yield event.plain_result("\n".join(lines))
+
 
     @gentts_group.command("emotion", alias={"情绪识别", "emo_test"})
     async def cmd_emotion_preview(self, event: AstrMessageEvent, text: str = ""):
@@ -1164,6 +1436,8 @@ class GenieTTSPlugin(Star):
             f"🎭 角色={opts.get('character')} 情绪={opts.get('emotion_id') or opts.get('emotion') or '默认'} 语言={opts.get('language')}\n"
             f"📚 音色配置: {len(self.voices)} 个 | 同步: {'是' if self._voices_synced or self.voices else '否'}\n"
             f"🧠 情绪识别: {'开' if self.emotion_detect_enabled else '关'}({self.emotion_mode}) 平滑={'开' if self.emotion_smooth else '关'} | 颜文字: {'开' if self.filter_kaomoji else '关'}\n"
+            f"✂️ 分段: {'开' if self.split_enabled else '关'} max={self.max_segments} 速度={self.send_speed} 逐段TTS={'开' if self.tts_each_segment else '关'}\n"
+            f"⚙️ 配置模式: {self.config_mode}\n"
             f"⚡ 会话: {'启用' if enabled else '禁用'} ({mode}) 概率={self.prob} 限制={self.text_limit or '无'}{last}"
         )
 

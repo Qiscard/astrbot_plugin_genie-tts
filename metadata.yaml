@@ -1,6 +1,6 @@
 name: astrbot_plugin_genie-tts
-desc: 基于 Genie TTS Gateway 的语音合成插件（预热降级/角色情绪选择）
-help: 发送 gentts help 查看指令。支持休眠预热文本降级、gentts list/use 选择模型情绪。
-version: v2.1.0
+desc: 基于 Genie TTS Gateway 的语音合成（颜文字过滤/LLM情绪路由/层叠音色）
+help: gentts help。首次启动自动同步模型到音色配置；支持情绪识别自动切参考音。
+version: v2.2.0
 author: victical
 repo: https://github.com/Qiscard/astrbot_plugin_genie-tts

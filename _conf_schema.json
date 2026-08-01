@@ -8,17 +8,15 @@
   "api_key": {
     "description": "API Key（X-API-Key）",
     "type": "string",
-    "hint": "必填",
     "default": ""
   },
   "character": {
-    "description": "默认角色",
+    "description": "当前默认角色（也可由音色配置覆盖）",
     "type": "string",
-    "hint": "如 lxh / feibi / manbo。也可用 gentts use / gentts list 选择",
     "default": "lxh"
   },
   "language": {
-    "description": "合成语言",
+    "description": "默认语言",
     "type": "string",
     "options": [
       "zh",
@@ -28,136 +26,324 @@
     "default": "zh"
   },
   "emotion_id": {
-    "description": "默认情绪 ID（优先）",
+    "description": "全局默认情绪 ID（无音色映射时回退）",
     "type": "int",
-    "hint": "0 表示自动选择该角色默认情绪",
     "default": 0
   },
   "emotion": {
-    "description": "默认情绪名",
+    "description": "全局默认情绪名",
     "type": "string",
-    "hint": "emotion_id=0 时可用；留空则自动选默认情绪",
     "default": ""
   },
+  "voices": {
+    "description": "音色配置（层叠：模型 → 情绪感知映射）",
+    "type": "template_list",
+    "hint": "首次连接 Gateway 会自动写入模型列表。每个模型下可配置“感知情绪→网关情绪/参考音”。可在面板新建/编辑，或 gentts sync 重新同步。",
+    "default": [],
+    "templates": {
+      "voice": {
+        "name": "音色/模型",
+        "display_item": "character",
+        "items": {
+          "character": {
+            "description": "模型名",
+            "type": "string",
+            "hint": "如 lxh / manbo / feibi",
+            "default": "lxh"
+          },
+          "enabled": {
+            "description": "启用该音色",
+            "type": "bool",
+            "default": true
+          },
+          "language": {
+            "description": "语言",
+            "type": "string",
+            "options": [
+              "zh",
+              "en",
+              "hybrid"
+            ],
+            "default": "zh"
+          },
+          "default_emotion_id": {
+            "description": "默认情绪 ID",
+            "type": "int",
+            "default": 0
+          },
+          "default_emotion": {
+            "description": "默认情绪名",
+            "type": "string",
+            "default": ""
+          },
+          "emotion_routes": {
+            "description": "情绪感知配置",
+            "type": "template_list",
+            "hint": "LLM 识别到左侧“感知情绪”后，切换到右侧网关情绪/参考音。",
+            "default": [],
+            "templates": {
+              "route": {
+                "name": "情绪映射",
+                "display_item": "label",
+                "items": {
+                  "label": {
+                    "description": "感知情绪标签",
+                    "type": "string",
+                    "hint": "如 高兴/悲伤/生气/平静/温柔/兴奋",
+                    "default": "平静"
+                  },
+                  "aliases": {
+                    "description": "别名（逗号分隔）",
+                    "type": "string",
+                    "hint": "例如：开心,快乐,愉悦",
+                    "default": ""
+                  },
+                  "emotion_id": {
+                    "description": "网关情绪 ID",
+                    "type": "int",
+                    "hint": "优先使用 ID；0 则用情绪名",
+                    "default": 0
+                  },
+                  "emotion": {
+                    "description": "网关情绪名",
+                    "type": "string",
+                    "default": ""
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
   "model_select": {
-    "description": "模型与情绪选择",
+    "description": "模型同步与选择",
     "type": "object",
-    "hint": "启动时加载角色/情绪目录；可自动绑定默认情绪，也可命令切换",
     "items": {
-      "auto_select_emotion": {
-        "description": "切换角色时自动加载默认情绪",
+      "auto_sync_voices": {
+        "description": "首次启动自动从 Gateway 同步音色到配置",
         "type": "bool",
         "default": true
+      },
+      "auto_select_emotion": {
+        "description": "无映射时自动绑定角色默认情绪",
+        "type": "bool",
+        "default": true
+      },
+      "overwrite_on_sync": {
+        "description": "gentts sync 时覆盖已有音色映射",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "emotion_detect": {
+    "description": "LLM 情绪识别",
+    "type": "object",
+    "hint": "根据回复文本识别情绪，并按音色配置自动切换参考音",
+    "items": {
+      "enabled": {
+        "description": "启用情绪识别自动切音色",
+        "type": "bool",
+        "default": true
+      },
+      "provider_id": {
+        "description": "识别用 LLM 提供商 ID（空=当前默认）",
+        "type": "string",
+        "default": ""
+      },
+      "labels": {
+        "description": "可选情绪标签（逗号分隔）",
+        "type": "string",
+        "hint": "会注入提示词；音色映射中的 label 也会并入",
+        "default": "高兴,悲伤,生气,平静,温柔,兴奋,惊讶,害怕,无奈,默认"
+      },
+      "timeout": {
+        "description": "识别超时秒数",
+        "type": "int",
+        "default": 12
+      },
+      "fallback_label": {
+        "description": "识别失败回退标签",
+        "type": "string",
+        "default": "默认"
       }
     }
   },
   "warmup": {
     "description": "预热模式",
     "type": "object",
-    "hint": "模型休眠时先按文本回复并后台预热，预热完成后恢复语音",
     "items": {
       "enabled": {
-        "description": "启用预热降级（休眠时先发文本）",
+        "description": "休眠时先文本后预热",
         "type": "bool",
         "default": true
       },
       "show_tip": {
-        "description": "文本回复时附加“正在预热”提示",
+        "description": "附加预热提示",
         "type": "bool",
         "default": false
       },
       "status_ttl": {
         "description": "状态缓存秒数",
         "type": "int",
-        "hint": "查询 /public-status 的缓存时间，避免每次都打状态接口",
         "default": 8
       }
     }
   },
   "split_sentence": {
-    "description": "是否分句合成",
+    "description": "分句合成",
     "type": "bool",
     "default": true
   },
   "save_on_server": {
-    "description": "是否在 Gateway 服务器保存音频",
+    "description": "服务端落盘",
     "type": "bool",
     "default": false
   },
   "timeout": {
-    "description": "合成超时（秒）",
+    "description": "合成超时秒",
     "type": "int",
     "default": 300
   },
   "retry_attempts": {
-    "description": "失败重试次数",
+    "description": "失败重试",
     "type": "int",
     "default": 3
   },
   "global_enable": {
-    "description": "全局开关（true=黑名单/默认开，false=白名单/默认关）",
+    "description": "全局开关（黑/白名单）",
     "type": "bool",
     "default": true
   },
   "prob": {
-    "description": "自动 TTS 触发概率",
+    "description": "触发概率",
     "type": "float",
     "default": 1.0
   },
   "text_limit": {
-    "description": "自动 TTS 文本长度上限（0=不限）",
+    "description": "自动TTS长度上限(0不限)",
     "type": "int",
     "default": 200
   },
   "cooldown": {
-    "description": "同一会话冷却秒数",
+    "description": "冷却秒",
     "type": "int",
     "default": 0
   },
   "text_process": {
     "description": "文本处理与音频裁剪",
     "type": "object",
-    "hint": "过滤、替换策略、静音裁剪等合并在此",
+    "hint": "过滤、颜文字、替换、静音裁剪等",
     "items": {
       "filter_code": {
-        "description": "过滤代码块/行内代码",
+        "description": "过滤代码",
         "type": "bool",
         "default": true
       },
       "filter_emoji": {
-        "description": "过滤 Emoji / QQ 表情",
+        "description": "过滤 Emoji/QQ表情",
         "type": "bool",
         "default": true
       },
       "filter_url": {
-        "description": "过滤 URL / 路径",
+        "description": "过滤 URL/路径",
         "type": "bool",
         "default": true
       },
       "filter_markdown": {
-        "description": "过滤 Markdown 标记",
+        "description": "过滤 Markdown",
         "type": "bool",
         "default": true
       },
+      "filter_kaomoji": {
+        "description": "过滤颜文字/括号动作/特殊符号（参考 tts_sanitizer）",
+        "type": "bool",
+        "default": true
+      },
+      "kaomoji_patterns": {
+        "description": "颜文字正则（一行一个）",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "[（(][^（()]*[）)]",
+          "[＞>][＿_][＜<]",
+          "[＾^][＿_][＾^]",
+          "[oO][＿_][oO]",
+          "[xX][＿_][xX]",
+          "[－-][＿_][－-]",
+          "[★☆♪♫♬♩♡♥❤️💖💕💗💓💝💟💜💛💚💙🧡🤍🖤🤎💔❣️💋]",
+          "[→←↑↓↖↗↘↙↔↕↺↻]"
+        ]
+      },
+      "kaomoji_words": {
+        "description": "直接删除的颜文字字符/词",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "ω",
+          "Ω",
+          "σ",
+          "Σ",
+          "ε",
+          "д",
+          "Д",
+          "´",
+          "",
+          "＝",
+          "∀",
+          "∇",
+          "orz",
+          "OTZ",
+          "QAQ",
+          "QWQ",
+          "TAT",
+          "TUT",
+          "www"
+        ]
+      },
+      "replacement_words": {
+        "description": "替换词（原词|新词）",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "233|哈哈哈",
+          "666|厉害",
+          "999|很棒",
+          "555|呜呜呜"
+        ]
+      },
+      "max_repeat_count": {
+        "description": "重复字符压缩（0关闭）",
+        "type": "int",
+        "default": 2
+      },
       "trim_silence": {
-        "description": "裁剪首尾静音（需 pydub+ffmpeg）",
+        "description": "裁剪静音",
         "type": "bool",
         "default": true
       },
       "replace_text": {
-        "description": "语音替换原文（关=语音在前并保留原文）",
+        "description": "语音替换原文",
         "type": "bool",
         "default": true
       },
       "send_text_with_audio": {
-        "description": "发语音时同时附带清洗后文本",
+        "description": "语音附带文本",
         "type": "bool",
         "default": false
       }
     }
   },
   "auto_check_on_start": {
-    "description": "启动时检查 Gateway 与 API Key，并加载模型列表",
+    "description": "启动检查 Gateway / 同步音色",
     "type": "bool",
     "default": true
   }

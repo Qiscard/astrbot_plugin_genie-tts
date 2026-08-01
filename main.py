@@ -1219,10 +1219,13 @@ class GenieTTSPlugin(Star):
 
             plain_indices: List[int] = []
             chunks: List[str] = []
+            extra_components: List[Any] = []
             for i, component in enumerate(result.chain):
                 if isinstance(component, Comp.Plain):
                     plain_indices.append(i)
                     chunks.append(component.text or "")
+                else:
+                    extra_components.append(component)
             raw_text = " ".join(chunks).strip()
             cleaned, _ = self._clean_text(raw_text)
             if not cleaned or len(cleaned) < 2:
@@ -1269,6 +1272,7 @@ class GenieTTSPlugin(Star):
                 # 最后一段留给 result
                 result.chain.clear()
                 result.chain.append(Comp.Plain(segments[-1]))
+                result.chain.extend(extra_components)
                 state.last_tts_time = now
                 state.last_tts_text = cleaned
                 return
@@ -1288,6 +1292,7 @@ class GenieTTSPlugin(Star):
             )
             result.chain.clear()
             result.chain.extend(last_comps)
+            result.chain.extend(extra_components)
             state.last_tts_time = now
             state.last_tts_text = cleaned
         except Exception as e:

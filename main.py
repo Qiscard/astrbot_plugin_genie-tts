@@ -126,7 +126,7 @@ class SessionState:
     "victical",
     "基于 Genie TTS Gateway 的语音合成插件",
     "2.1.0",
-    "https://github.com/victical/astrbot_plugin_genie-tts",
+    "https://github.com/Qiscard/astrbot_plugin_genie-tts",
 )
 class GenieTTSPlugin(Star):
     def __init__(self, context: Context, config: dict):

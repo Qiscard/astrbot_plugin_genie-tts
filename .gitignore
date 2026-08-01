@@ -1,0 +1,12 @@
+﻿__pycache__/
+*.py[cod]
+*.pyo
+temp_audio/
+*.wav
+*.bak
+_gen.py
+_part*.py
+.DS_Store
+.idea/
+.vscode/
+*.log

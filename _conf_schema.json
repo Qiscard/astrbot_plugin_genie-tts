@@ -1,0 +1,164 @@
+{
+  "base_url": {
+    "description": "Genie TTS Gateway 地址",
+    "type": "string",
+    "hint": "例如 http://211.154.18.252:19880",
+    "default": "http://127.0.0.1:19880"
+  },
+  "api_key": {
+    "description": "API Key（X-API-Key）",
+    "type": "string",
+    "hint": "必填",
+    "default": ""
+  },
+  "character": {
+    "description": "默认角色",
+    "type": "string",
+    "hint": "如 lxh / feibi / manbo。也可用 gentts use / gentts list 选择",
+    "default": "lxh"
+  },
+  "language": {
+    "description": "合成语言",
+    "type": "string",
+    "options": [
+      "zh",
+      "en",
+      "hybrid"
+    ],
+    "default": "zh"
+  },
+  "emotion_id": {
+    "description": "默认情绪 ID（优先）",
+    "type": "int",
+    "hint": "0 表示自动选择该角色默认情绪",
+    "default": 0
+  },
+  "emotion": {
+    "description": "默认情绪名",
+    "type": "string",
+    "hint": "emotion_id=0 时可用；留空则自动选默认情绪",
+    "default": ""
+  },
+  "model_select": {
+    "description": "模型与情绪选择",
+    "type": "object",
+    "hint": "启动时加载角色/情绪目录；可自动绑定默认情绪，也可命令切换",
+    "items": {
+      "auto_select_emotion": {
+        "description": "切换角色时自动加载默认情绪",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "warmup": {
+    "description": "预热模式",
+    "type": "object",
+    "hint": "模型休眠时先按文本回复并后台预热，预热完成后恢复语音",
+    "items": {
+      "enabled": {
+        "description": "启用预热降级（休眠时先发文本）",
+        "type": "bool",
+        "default": true
+      },
+      "show_tip": {
+        "description": "文本回复时附加“正在预热”提示",
+        "type": "bool",
+        "default": false
+      },
+      "status_ttl": {
+        "description": "状态缓存秒数",
+        "type": "int",
+        "hint": "查询 /public-status 的缓存时间，避免每次都打状态接口",
+        "default": 8
+      }
+    }
+  },
+  "split_sentence": {
+    "description": "是否分句合成",
+    "type": "bool",
+    "default": true
+  },
+  "save_on_server": {
+    "description": "是否在 Gateway 服务器保存音频",
+    "type": "bool",
+    "default": false
+  },
+  "timeout": {
+    "description": "合成超时（秒）",
+    "type": "int",
+    "default": 300
+  },
+  "retry_attempts": {
+    "description": "失败重试次数",
+    "type": "int",
+    "default": 3
+  },
+  "global_enable": {
+    "description": "全局开关（true=黑名单/默认开，false=白名单/默认关）",
+    "type": "bool",
+    "default": true
+  },
+  "prob": {
+    "description": "自动 TTS 触发概率",
+    "type": "float",
+    "default": 1.0
+  },
+  "text_limit": {
+    "description": "自动 TTS 文本长度上限（0=不限）",
+    "type": "int",
+    "default": 200
+  },
+  "cooldown": {
+    "description": "同一会话冷却秒数",
+    "type": "int",
+    "default": 0
+  },
+  "text_process": {
+    "description": "文本处理与音频裁剪",
+    "type": "object",
+    "hint": "过滤、替换策略、静音裁剪等合并在此",
+    "items": {
+      "filter_code": {
+        "description": "过滤代码块/行内代码",
+        "type": "bool",
+        "default": true
+      },
+      "filter_emoji": {
+        "description": "过滤 Emoji / QQ 表情",
+        "type": "bool",
+        "default": true
+      },
+      "filter_url": {
+        "description": "过滤 URL / 路径",
+        "type": "bool",
+        "default": true
+      },
+      "filter_markdown": {
+        "description": "过滤 Markdown 标记",
+        "type": "bool",
+        "default": true
+      },
+      "trim_silence": {
+        "description": "裁剪首尾静音（需 pydub+ffmpeg）",
+        "type": "bool",
+        "default": true
+      },
+      "replace_text": {
+        "description": "语音替换原文（关=语音在前并保留原文）",
+        "type": "bool",
+        "default": true
+      },
+      "send_text_with_audio": {
+        "description": "发语音时同时附带清洗后文本",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "auto_check_on_start": {
+    "description": "启动时检查 Gateway 与 API Key，并加载模型列表",
+    "type": "bool",
+    "default": true
+  }
+}

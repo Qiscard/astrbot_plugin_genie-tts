@@ -2,6 +2,13 @@
 
 Genie TTS Gateway 客户端插件。
 
+## v2.2.1 情绪识别增强
+参考 [astrbot-plugin-realistic-persona](https://github.com/LMG-arch/astrbot-plugin-realistic-persona)：
+- 标准情绪枚举：开心/悲伤/生气/兴奋/平静/困惑/无聊/好奇/惊讶/焦虑
+- **hybrid**：关键词优先 + LLM 兜底
+- 会话情绪平滑，减少音色乱跳
+- gentts emotion <文本> 预览识别与映射
+
 ## v2.2 新功能
 1. **颜文字过滤**（参考 [tts_sanitizer](https://github.com/Luna-channel/astrbot_plugin_tts_sanitizer)）
 2. **LLM 情绪识别** → 按音色映射自动切换参考音

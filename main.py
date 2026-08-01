@@ -43,19 +43,38 @@ DEFAULT_KAOMOJI_WORDS = [
     "orz", "OTZ", "QAQ", "QWQ", "TAT", "TUT", "www",
 ]
 DEFAULT_REPLACEMENTS = ["233|哈哈哈", "666|厉害", "999|很棒", "555|呜呜呜"]
-DEFAULT_EMOTION_LABELS = "高兴,悲伤,生气,平静,温柔,兴奋,惊讶,害怕,无奈,默认"
-SEMANTIC_HINTS = {
-    "高兴": ["高兴", "开心", "快乐", "欢快", "标准", "愉快"],
-    "悲伤": ["悲伤", "难过", "伤心", "哭"],
-    "生气": ["生气", "愤怒", "恼"],
-    "平静": ["平静", "标准", "默认", "普通", "原始"],
-    "温柔": ["温柔", "软", "轻"],
-    "兴奋": ["兴奋", "激动", "元气"],
-    "惊讶": ["惊讶", "吃惊"],
-    "害怕": ["害怕", "恐惧"],
-    "无奈": ["无奈", "叹气"],
-    "默认": ["标准", "默认", "原始", "平静"],
-}
+try:
+    from .emotions import (
+        DEFAULT_EMOTION_LABELS,
+        EMOTION_ALIASES,
+        EMOTION_INTENSITY_MAP,
+        EmotionAnalyzer,
+        EmotionContext,
+        EmotionType,
+        build_semantic_routes_for_gateway_emotions,
+    )
+except ImportError:  # 兼容直接加载 main.py
+    from emotions import (
+        DEFAULT_EMOTION_LABELS,
+        EMOTION_ALIASES,
+        EMOTION_INTENSITY_MAP,
+        EmotionAnalyzer,
+        EmotionContext,
+        EmotionType,
+        build_semantic_routes_for_gateway_emotions,
+    )
+
+# 兼容旧 SEMANTIC_HINTS 引用
+SEMANTIC_HINTS = {e.value: aliases for e, aliases in EMOTION_ALIASES.items()}
+SEMANTIC_HINTS.update({
+    "高兴": EMOTION_ALIASES[EmotionType.HAPPY],
+    "快乐": EMOTION_ALIASES[EmotionType.HAPPY],
+    "害怕": EMOTION_ALIASES[EmotionType.ANXIOUS],
+    "无奈": EMOTION_ALIASES[EmotionType.BORED],
+    "温柔": EMOTION_ALIASES[EmotionType.CALM],
+    "默认": EMOTION_ALIASES[EmotionType.CALM],
+})
+
 
 EMOJI_RE = re.compile(
     "["
@@ -140,7 +159,7 @@ class SessionState:
     "genie-tts",
     "victical",
     "基于 Genie TTS Gateway 的语音合成插件",
-    "2.2.0",
+    "2.2.1",
     "https://github.com/Qiscard/astrbot_plugin_genie-tts",
 )
 class GenieTTSPlugin(Star):
@@ -156,6 +175,7 @@ class GenieTTSPlugin(Star):
         self._emotions_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._characters_cache: List[Dict[str, Any]] = []
         self._session_state: Dict[str, SessionState] = {}
+        self._emotion_contexts: Dict[str, EmotionContext] = {}
         self.enabled_sessions: List[str] = list(self.config.get("enabled_sessions", []) or [])
         self.disabled_sessions: List[str] = list(self.config.get("disabled_sessions", []) or [])
         self._model_hot = False
@@ -196,6 +216,19 @@ class GenieTTSPlugin(Star):
         self.emotion_labels = str(_cfg_get(self.config, "emotion_labels", DEFAULT_EMOTION_LABELS, ("emotion_detect", "labels")) or DEFAULT_EMOTION_LABELS)
         self.emotion_timeout = max(3, _as_int(_cfg_get(self.config, "emotion_timeout", 12, ("emotion_detect", "timeout")), 12))
         self.emotion_fallback = str(_cfg_get(self.config, "emotion_fallback", "默认", ("emotion_detect", "fallback_label")) or "默认")
+        # keyword | llm | hybrid（参考 realistic-persona：关键词为主，LLM 兜底）
+        mode = str(_cfg_get(self.config, "emotion_mode", "hybrid", ("emotion_detect", "mode")) or "hybrid").strip().lower()
+        if mode not in {"keyword", "llm", "hybrid"}:
+            mode = "hybrid"
+        self.emotion_mode = mode
+        self.emotion_keyword_threshold = _as_float(
+            _cfg_get(self.config, "emotion_keyword_threshold", 0.55, ("emotion_detect", "keyword_threshold")),
+            0.55,
+        )
+        self.emotion_smooth = _as_bool(
+            _cfg_get(self.config, "emotion_smooth", True, ("emotion_detect", "smooth")),
+            True,
+        )
 
         self.split_sentence = _as_bool(self.config.get("split_sentence", True), True)
         self.save_on_server = _as_bool(self.config.get("save_on_server", False), False)
@@ -258,7 +291,7 @@ class GenieTTSPlugin(Star):
         return value.rstrip("/")
 
     def _auth_headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        headers = {"Accept": "*/*", "User-Agent": "AstrBot-GenieTTS/2.2"}
+        headers = {"Accept": "*/*", "User-Agent": "AstrBot-GenieTTS/2.2.1"}
         if self.api_key: headers["X-API-Key"] = self.api_key
         if extra: headers.update(extra)
         return headers
@@ -287,6 +320,9 @@ class GenieTTSPlugin(Star):
                 "labels": self.emotion_labels,
                 "timeout": self.emotion_timeout,
                 "fallback_label": self.emotion_fallback,
+                "mode": self.emotion_mode,
+                "keyword_threshold": self.emotion_keyword_threshold,
+                "smooth": self.emotion_smooth,
             }
             self.config["warmup"] = {
                 "enabled": self.warmup_mode,
@@ -439,35 +475,17 @@ class GenieTTSPlugin(Star):
             default_id = _as_int(emos[0].get("id"), 0)
             default_name = str(emos[0].get("emotion") or emos[0].get("remark") or "")
 
-        routes = []
-        # 1) 每个网关情绪本身作为可识别标签
-        for e in emos:
-            label = str(e.get("emotion") or e.get("remark") or f"id{e.get('id')}")
-            routes.append({
+        # 标准情绪标签(开心/悲伤/...) + 网关原始情绪名
+        routes = build_semantic_routes_for_gateway_emotions(emos)
+        # 保证默认标签
+        labels = {str(r.get("label")) for r in routes}
+        if "默认" not in labels and (default_id or default_name):
+            routes.insert(0, {
                 "__template_key": "route",
-                "label": label,
-                "aliases": "",
-                "emotion_id": _as_int(e.get("id"), 0),
-                "emotion": label,
-            })
-        # 2) 语义标签映射到最接近的网关情绪
-        existing_labels = {str(r["label"]) for r in routes}
-        for sem, hints in SEMANTIC_HINTS.items():
-            if sem in existing_labels: continue
-            matched = None
-            for e in emos:
-                en = str(e.get("emotion") or e.get("remark") or "")
-                if any(h in en for h in hints):
-                    matched = e; break
-            if matched is None and default_id:
-                matched = {"id": default_id, "emotion": default_name}
-            if matched is None: continue
-            routes.append({
-                "__template_key": "route",
-                "label": sem,
-                "aliases": ",".join(hints[:4]),
-                "emotion_id": _as_int(matched.get("id"), 0),
-                "emotion": str(matched.get("emotion") or matched.get("remark") or default_name),
+                "label": "默认",
+                "aliases": "平静,标准,普通",
+                "emotion_id": default_id,
+                "emotion": default_name,
             })
 
         return {
@@ -559,48 +577,116 @@ class GenieTTSPlugin(Star):
         all_p = self.context.get_all_providers()
         return all_p[0] if all_p else None
 
-    async def _detect_emotion_label(self, text: str, character: str) -> str:
+    def _emotion_context(self, sid: str) -> EmotionContext:
+        return self._emotion_contexts.setdefault(sid, EmotionContext())
+
+    async def _detect_emotion_label(self, text: str, character: str, sid: Optional[str] = None) -> str:
+        """混合情绪识别：关键词(realistic-persona)优先，不足时 LLM 兜底，可会话平滑。"""
         if not self.emotion_detect_enabled:
             return self.emotion_fallback or "默认"
+
+        cleaned = (text or "").strip()
+        label = ""
+        source = "none"
+        intensity = 0.5
+        emo_obj: Optional[EmotionType] = None
+
+        # 1) 关键词
+        if self.emotion_mode in {"keyword", "hybrid"}:
+            emo_obj, conf, scores = EmotionAnalyzer.analyze(cleaned)
+            if emo_obj and (self.emotion_mode == "keyword" or conf >= self.emotion_keyword_threshold):
+                label = emo_obj.value
+                source = f"keyword conf={conf:.2f} scores={scores}"
+                intensity = EMOTION_INTENSITY_MAP.get(emo_obj, 0.5)
+            elif emo_obj and self.emotion_mode == "hybrid":
+                # 弱匹配：先记下，LLM 可覆盖
+                label = emo_obj.value
+                source = f"keyword-weak conf={conf:.2f}"
+                intensity = EMOTION_INTENSITY_MAP.get(emo_obj, 0.5)
+
+        # 2) LLM 兜底
+        need_llm = self.emotion_mode == "llm" or (
+            self.emotion_mode == "hybrid" and (not label or "weak" in source)
+        )
+        if need_llm:
+            llm_label = await self._detect_emotion_by_llm(cleaned, character)
+            if llm_label:
+                mapped = EmotionAnalyzer.from_label(llm_label)
+                label = mapped.value if mapped else llm_label
+                source = f"llm raw={llm_label}"
+                emo_obj = mapped or EmotionAnalyzer.from_label(label)
+                if emo_obj:
+                    intensity = EMOTION_INTENSITY_MAP.get(emo_obj, 0.5)
+
+        if not label:
+            label = self.emotion_fallback or "默认"
+            source = "fallback"
+
+        # 3) 会话平滑（避免一句一变）
+        if self.emotion_smooth and sid:
+            ctx = self._emotion_context(sid)
+            cur = EmotionAnalyzer.from_label(label)
+            smoothed = ctx.smooth(cur)
+            if smoothed is not None:
+                label = smoothed.value
+                emo_obj = smoothed
+                intensity = EMOTION_INTENSITY_MAP.get(smoothed, intensity)
+            if emo_obj is not None:
+                ctx.add(emo_obj, cleaned[:80], time.time(), intensity)
+
+        logger.info(f"[GenieTTS] emotion={label} via {source} char={character}")
+        return label
+
+    async def _detect_emotion_by_llm(self, text: str, character: str) -> str:
         provider = self._get_emotion_provider()
         if not provider:
             logger.warning("[GenieTTS] 无可用 LLM，跳过情绪识别")
-            return self.emotion_fallback or "默认"
+            return ""
 
         labels = [x.strip() for x in self.emotion_labels.split(",") if x.strip()]
+        for x in EmotionAnalyzer.all_labels():
+            if x not in labels:
+                labels.append(x)
         prof = self._get_voice_profile(character)
         if prof and isinstance(prof.get("emotion_routes"), list):
             for r in prof["emotion_routes"]:
                 if isinstance(r, dict):
                     lab = str(r.get("label") or "").strip()
-                    if lab and lab not in labels: labels.append(lab)
+                    if lab and lab not in labels:
+                        labels.append(lab)
         label_str = "、".join(labels[:30]) or DEFAULT_EMOTION_LABELS
         snippet = (text or "").strip()
-        if len(snippet) > 280: snippet = snippet[:280]
+        if len(snippet) > 280:
+            snippet = snippet[:280]
         prompt = (
-            "你是情绪分类器。根据文本判断说话者情绪，只输出一个标签，不要解释。\n"
+            "你是中文对话情绪分类器。根据【助手回复文本】判断其表达的情绪，只输出一个标签。\n"
             f"可选标签：{label_str}\n"
+            "要求：不要解释、不要标点、不要多写；若不明显则输出 平静。\n"
             f"文本：{snippet}\n"
             "标签："
         )
         try:
             async def _call():
-                return await provider.text_chat(prompt=prompt, session_id=None, contexts=[], image_urls=[], system_prompt="")
+                return await provider.text_chat(
+                    prompt=prompt,
+                    session_id=None,
+                    contexts=[],
+                    image_urls=[],
+                    system_prompt="只输出情绪标签。",
+                )
             resp = await asyncio.wait_for(_call(), timeout=self.emotion_timeout)
-            raw = ""
-            if getattr(resp, "role", None) == "assistant" or hasattr(resp, "completion_text"):
-                raw = str(getattr(resp, "completion_text", "") or "").strip()
-            else:
-                raw = str(resp or "").strip()
-            raw = raw.splitlines()[0].strip()
-            for ch in '[]()<>"\' ':
-                raw = raw.strip(ch)
-            for lab in labels:
-                if lab and lab in raw: return lab
-            if raw: return raw[:16]
+            raw = str(getattr(resp, "completion_text", "") or resp or "").strip()
+            if raw:
+                raw = raw.splitlines()[0].strip()
+                for ch in "[]()<>\"' ":
+                    raw = raw.strip(ch)
+                for lab in labels:
+                    if lab and lab in raw:
+                        return lab
+                return raw[:16]
         except Exception as e:
-            logger.warning(f"[GenieTTS] 情绪识别失败: {e}")
-        return self.emotion_fallback or "默认"
+            logger.warning(f"[GenieTTS] LLM 情绪识别失败: {e}")
+        return ""
 
     def _clean_text(self, text: str) -> Tuple[str, List[str]]:
         references: List[str] = []
@@ -935,7 +1021,7 @@ class GenieTTSPlugin(Star):
             character = state.character or self.character
             emotion_override = None
             if self.emotion_detect_enabled:
-                label = await self._detect_emotion_label(cleaned, character)
+                label = await self._detect_emotion_label(cleaned, character, sid=sid)
                 eid, ename, matched = self._resolve_emotion_from_label(character, label)
                 state.last_emotion_label = matched or label
                 emotion_override = (eid, ename)
@@ -972,7 +1058,7 @@ class GenieTTSPlugin(Star):
             "gentts list / characters / emotions\n"
             "gentts use <角色> [情绪] / char / emo\n"
             "gentts sync [force]  同步网关模型到层叠配置\n"
-            "gentts filter <文本> 预览过滤效果\n"
+            "gentts filter <文本> 预览过滤效果\n""gentts emotion <文本> 预览情绪识别\n"
             "gentts voices        查看音色映射\n"
             "管理员: wake/sleep/unload/reload/globalon/off"
         )
@@ -991,7 +1077,7 @@ class GenieTTSPlugin(Star):
         try:
             sid = self._sess_id(event)
             cleaned, _ = self._clean_text(raw)
-            label = await self._detect_emotion_label(cleaned, self.character) if self.emotion_detect_enabled else self.emotion_fallback
+            label = await self._detect_emotion_label(cleaned, self.character, sid=self._sess_id(event)) if self.emotion_detect_enabled else self.emotion_fallback
             eid, ename, matched = self._resolve_emotion_from_label(self.character, label)
             path = await self._generate_audio(raw, sid=sid, emotion_override=(eid, ename))
             yield event.chain_result([Comp.Record(file=path, url=path), Comp.Plain(f"情绪识别: {label} -> {matched} ({eid}:{ename})")])
@@ -1007,6 +1093,31 @@ class GenieTTSPlugin(Star):
                 raw = raw[len(prefix):].strip(); break
         cleaned, _ = self._clean_text(raw)
         yield event.plain_result(f"原文({len(raw)}):\n{raw}\n\n过滤后({len(cleaned)}):\n{cleaned or '(空)'}")
+
+    @gentts_group.command("emotion", alias={"情绪识别", "emo_test"})
+    async def cmd_emotion_preview(self, event: AstrMessageEvent, text: str = ""):
+        raw = (text or "").strip() or (event.message_str or "")
+        for prefix in ("gentts emotion", "gentts 情绪识别", "gentts emo_test"):
+            if raw.lower().startswith(prefix.lower()):
+                raw = raw[len(prefix):].strip()
+                break
+        if not raw:
+            yield event.plain_result("用法: gentts emotion <文本>")
+            return
+        sid = self._sess_id(event)
+        cleaned, _ = self._clean_text(raw)
+        kw_emo, conf, scores = EmotionAnalyzer.analyze(cleaned)
+        label = await self._detect_emotion_label(cleaned or raw, self.character, sid=sid)
+        eid, ename, matched = self._resolve_emotion_from_label(self.character, label)
+        trend = self._emotion_context(sid).trend() or "-"
+        yield event.plain_result(
+            "🧠 情绪识别预览\n"
+            f"过滤后: {cleaned or raw}\n"
+            f"关键词: {(kw_emo.value if kw_emo else '无')} conf={conf:.2f} scores={scores}\n"
+            f"最终标签: {label} (匹配路由 {matched})\n"
+            f"音色映射: {eid}:{ename}\n"
+            f"模式: {self.emotion_mode} | 趋势: {trend}"
+        )
 
     @gentts_group.command("on")
     async def cmd_on(self, event: AstrMessageEvent):
@@ -1052,7 +1163,7 @@ class GenieTTSPlugin(Star):
             f"🌐 {public_status}\n"
             f"🎭 角色={opts.get('character')} 情绪={opts.get('emotion_id') or opts.get('emotion') or '默认'} 语言={opts.get('language')}\n"
             f"📚 音色配置: {len(self.voices)} 个 | 同步: {'是' if self._voices_synced or self.voices else '否'}\n"
-            f"🧠 情绪识别: {'开' if self.emotion_detect_enabled else '关'} | 颜文字过滤: {'开' if self.filter_kaomoji else '关'}\n"
+            f"🧠 情绪识别: {'开' if self.emotion_detect_enabled else '关'}({self.emotion_mode}) 平滑={'开' if self.emotion_smooth else '关'} | 颜文字: {'开' if self.filter_kaomoji else '关'}\n"
             f"⚡ 会话: {'启用' if enabled else '禁用'} ({mode}) 概率={self.prob} 限制={self.text_limit or '无'}{last}"
         )
 

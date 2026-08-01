@@ -79,7 +79,7 @@
           "emotion_routes": {
             "description": "情绪感知配置",
             "type": "template_list",
-            "hint": "LLM 识别到左侧“感知情绪”后，切换到右侧网关情绪/参考音。",
+            "hint": "感知标签建议使用：开心/悲伤/生气/兴奋/平静/困惑/无聊/好奇/惊讶/焦虑。同步模型时会自动生成。",
             "default": [],
             "templates": {
               "route": {
@@ -141,7 +141,7 @@
   "emotion_detect": {
     "description": "LLM 情绪识别",
     "type": "object",
-    "hint": "根据回复文本识别情绪，并按音色配置自动切换参考音",
+    "hint": "参考 realistic-persona：关键词情绪分析 + 可选 LLM；识别结果映射到 voices 层叠配置",
     "items": {
       "enabled": {
         "description": "启用情绪识别自动切音色",
@@ -156,8 +156,8 @@
       "labels": {
         "description": "可选情绪标签（逗号分隔）",
         "type": "string",
-        "hint": "会注入提示词；音色映射中的 label 也会并入",
-        "default": "高兴,悲伤,生气,平静,温柔,兴奋,惊讶,害怕,无奈,默认"
+        "hint": "与 realistic-persona 情绪枚举对齐；音色 emotion_routes 的 label 建议使用这些词",
+        "default": "开心,悲伤,生气,兴奋,平静,困惑,无聊,好奇,惊讶,焦虑,默认"
       },
       "timeout": {
         "description": "识别超时秒数",
@@ -168,6 +168,27 @@
         "description": "识别失败回退标签",
         "type": "string",
         "default": "默认"
+      },
+      "mode": {
+        "description": "识别模式",
+        "type": "string",
+        "options": [
+          "hybrid",
+          "keyword",
+          "llm"
+        ],
+        "default": "hybrid",
+        "hint": "hybrid=关键词优先(参考 realistic-persona)+LLM兜底；keyword=仅关键词；llm=仅模型"
+      },
+      "keyword_threshold": {
+        "description": "关键词置信阈值（hybrid 下达到则不走 LLM）",
+        "type": "float",
+        "default": 0.55
+      },
+      "smooth": {
+        "description": "会话情绪平滑（避免连续回复音色乱跳）",
+        "type": "bool",
+        "default": true
       }
     }
   },

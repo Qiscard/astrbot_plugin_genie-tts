@@ -1,6 +1,6 @@
 name: astrbot_plugin_genie-tts
-desc: 基于 Genie TTS Gateway 的语音合成（分类配置/分段TTS/情绪路由/层叠音色）
-help: gentts help。配置分简易/完整模式；完整模式含 gateway/voices/emotion/filter/split/warmup/trigger。
-version: v2.3.0
+desc: 基于 Genie TTS Gateway 的语音合成（功能分类配置/模糊对接/分段TTS/情绪路由）
+help: gentts help。配置分类：基础配置/音色模型/情绪感知/过滤处理/分段发送/预热触发。
+version: v2.4.0
 author: victical
 repo: https://github.com/Qiscard/astrbot_plugin_genie-tts

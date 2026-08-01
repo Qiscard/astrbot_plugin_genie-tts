@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AstrBot Genie-TTS v2.3: 分类配置 / 分段TTS / 预热降级 / 情绪路由 / 层叠音色。"""
+"""AstrBot Genie-TTS v2.4: 功能分类配置 / 模糊对接 / 分段TTS / 情绪路由。"""
 from __future__ import annotations
 
 import asyncio
@@ -91,6 +91,30 @@ except ImportError:
         split_text as split_plain_text,
     )
 
+try:
+    from .match_util import (
+        match_emotion_mode,
+        match_language,
+        match_name_in_list,
+        match_send_speed,
+        norm_key,
+        parse_emotion_routes,
+        pick_by_names,
+        expand_aliases,
+    )
+except ImportError:
+    from match_util import (
+        match_emotion_mode,
+        match_language,
+        match_name_in_list,
+        match_send_speed,
+        norm_key,
+        parse_emotion_routes,
+        pick_by_names,
+        expand_aliases,
+    )
+
+
 
 EMOJI_RE = re.compile(
     "["
@@ -175,7 +199,7 @@ class SessionState:
     "genie-tts",
     "victical",
     "基于 Genie TTS Gateway 的语音合成插件",
-    "2.3.0",
+    "2.4.0",
     "https://github.com/Qiscard/astrbot_plugin_genie-tts",
 )
 class GenieTTSPlugin(Star):
@@ -206,7 +230,8 @@ class GenieTTSPlugin(Star):
         self._repeat_regex: Optional[re.Pattern] = None
         self._replacements: Dict[str, str] = {}
         self._apply_runtime_config()
-        logger.info(f"[GenieTTS] init mode={self.config_mode} base={self.base_url} char={self.character} split={self.split_enabled} emo={self.emotion_detect_enabled} voices={len(self.voices)}")
+        logger.info('[GenieTTS] init section=%s base=%s char=%s split=%s emo=%s voices=%s' % (getattr(self, 'config_section', getattr(self, 'config_mode', '')), self.base_url, self.character, self.split_enabled, self.emotion_detect_enabled, len(self.voices)))
+
 
 
     def _cat(self, *names: str) -> dict:
@@ -216,13 +241,10 @@ class GenieTTSPlugin(Star):
                 return obj
         return {}
 
-
     def _get_cfg(self, key: str, default=None, *cats: str):
-        """按分类读取配置。指定 cats 时只在这些分类中查找，避免 enabled/timeout 串读。"""
-        if getattr(self, "_simple_overrides", None) and key in self._simple_overrides:
-            return self._simple_overrides[key]
+        """按功能分类读取。指定 cats 时只查这些分类，避免 enabled/timeout 串读。"""
         search = cats if cats else (
-            "gateway", "filter", "split", "warmup", "trigger",
+            "basic", "gateway", "filter", "split", "warmup", "trigger",
             "emotion_detect", "model_select", "text_process", "simple_settings",
         )
         for cat in search:
@@ -233,93 +255,94 @@ class GenieTTSPlugin(Star):
             return self.config.get(key)
         return default
 
-
-    def _apply_simple_overrides(self) -> None:
-        s = self._cat('simple_settings')
-        o = {
-            'character': s.get('character', self.config.get('character', 'lxh')),
-            'emotion_detect_enabled': _as_bool(s.get('enable_emotion', True), True),
-            'split_enabled': _as_bool(s.get('enable_split', True), True),
-            'max_segments': _as_int(s.get('max_segments', 5), 5),
-            'send_speed': s.get('send_speed', '自然'),
-            'warmup_mode': _as_bool(s.get('enable_warmup', True), True),
-            'text_limit': _as_int(s.get('text_limit', 300), 300),
-            'enable_auto_tts': _as_bool(s.get('enable_auto_tts', True), True),
-            'tts_each_segment': True,
-            'prob': 1.0,
-            'cooldown': 0,
-            'global_enable': True,
-            'split_chars': list(DEFAULT_SPLIT_CHARS),
-            'min_segment_length': 8,
-            'protect_pairs': True,
-        }
-        en_f = _as_bool(s.get('enable_filter', True), True)
-        for k in ('filter_code', 'filter_emoji', 'filter_url', 'filter_markdown', 'filter_kaomoji'):
-            o[k] = en_f
-        self._simple_overrides = o
-
-
     def _apply_runtime_config(self) -> None:
-        """读取配置：支持简易/完整模式，兼容旧扁平字段。"""
-        self.config_mode = str(self.config.get("config_mode", "简易模式") or "简易模式")
-        self._is_simple = self.config_mode == "简易模式"
+        """按功能分类读取配置（基础/音色/情绪/过滤/分段/预热），兼容旧字段。"""
+        # 兼容旧 config_mode，但不再区分简易/完整
+        self.config_section = str(
+            self.config.get("config_section")
+            or self.config.get("config_mode")
+            or "基础配置"
+        )
+        # 旧值映射
+        if self.config_section in {"简易模式", "完整模式", "进阶模式", "专业模式"}:
+            self.config_section = "基础配置"
+        self.config_mode = self.config_section  # 兼容旧日志字段
+        self._is_simple = False
         self._simple_overrides = {}
-        if self._is_simple:
-            self._apply_simple_overrides()
 
         raw_base = self.config.get("base_url") or self.config.get("server_host") or "http://127.0.0.1:19880"
         self.base_url = self._normalize_base_url(str(raw_base), self.config.get("server_port"))
         self.api_key = str(self.config.get("api_key", "") or "").strip()
 
-        # gateway / 基础
-        self.character = str(self._get_cfg("character", self.config.get("character") or self.config.get("character_name") or "lxh", "gateway", "simple_settings") or "lxh").strip()
-        self.language = str(self._get_cfg("language", self.config.get("language", "zh"), "gateway") or "zh").strip().lower()
-        if self.language not in {"zh", "en", "hybrid"}:
-            self.language = "zh"
-        self.emotion_id = _as_int(self._get_cfg("emotion_id", self.config.get("emotion_id", 0), "gateway"), 0)
-        emotion = str(self._get_cfg("emotion", self.config.get("emotion", ""), "gateway") or "").strip()
-        if emotion in {"0", "none", "null", "default"}:
+        # —— 基础配置（兼容 gateway / simple_settings / 顶层）——
+        self.character = str(
+            self._get_cfg(
+                "character",
+                self.config.get("character") or self.config.get("character_name") or "lxh",
+                "basic", "gateway", "simple_settings",
+            ) or "lxh"
+        ).strip()
+        lang_raw = self._get_cfg("language", self.config.get("language", "zh"), "basic", "gateway")
+        self.language = match_language(lang_raw, "zh")
+        self.emotion_id = _as_int(
+            self._get_cfg("emotion_id", self.config.get("emotion_id", 0), "basic", "gateway"), 0
+        )
+        emotion = str(
+            self._get_cfg("emotion", self.config.get("emotion", ""), "basic", "gateway") or ""
+        ).strip()
+        if norm_key(emotion) in {"0", "none", "null", "default", "默认", "标准", "普通"}:
             emotion = ""
         self.emotion = emotion
 
         voices = self.config.get("voices", [])
         self.voices: List[Dict[str, Any]] = list(voices) if isinstance(voices, list) else []
+        # 规范化每条 voice 的 emotion_routes
+        for v in self.voices:
+            if isinstance(v, dict) and "emotion_routes" in v:
+                v["emotion_routes"] = parse_emotion_routes(v.get("emotion_routes"))
 
         self.auto_sync_voices = _as_bool(self._get_cfg("auto_sync_voices", True, "model_select"), True)
         self.auto_select_emotion = _as_bool(self._get_cfg("auto_select_emotion", True, "model_select"), True)
         self.overwrite_on_sync = _as_bool(self._get_cfg("overwrite_on_sync", False, "model_select"), False)
 
         self.emotion_detect_enabled = _as_bool(self._get_cfg("enabled", True, "emotion_detect"), True)
-        # 兼容旧字段 emotion_detect_enabled
         if "emotion_detect_enabled" in self.config and not isinstance(self.config.get("emotion_detect"), dict):
-            self.emotion_detect_enabled = _as_bool(self.config.get("emotion_detect_enabled"), self.emotion_detect_enabled)
+            self.emotion_detect_enabled = _as_bool(
+                self.config.get("emotion_detect_enabled"), self.emotion_detect_enabled
+            )
         self.emotion_provider_id = str(self._get_cfg("provider_id", "", "emotion_detect") or "").strip()
-        self.emotion_labels = str(self._get_cfg("labels", DEFAULT_EMOTION_LABELS, "emotion_detect") or DEFAULT_EMOTION_LABELS)
+        self.emotion_labels = str(
+            self._get_cfg("labels", DEFAULT_EMOTION_LABELS, "emotion_detect") or DEFAULT_EMOTION_LABELS
+        )
         ed = self._cat("emotion_detect")
         self.emotion_timeout = max(3, _as_int(ed.get("timeout", 12), 12))
         self.emotion_fallback = str(self._get_cfg("fallback_label", "默认", "emotion_detect") or "默认")
-        mode = str(self._get_cfg("mode", "hybrid", "emotion_detect") or "hybrid").strip().lower()
-        if mode not in {"keyword", "llm", "hybrid"}:
-            mode = "hybrid"
-        self.emotion_mode = mode
-        self.emotion_keyword_threshold = _as_float(self._get_cfg("keyword_threshold", 0.55, "emotion_detect"), 0.55)
+        self.emotion_mode = match_emotion_mode(self._get_cfg("mode", "hybrid", "emotion_detect"), "hybrid")
+        self.emotion_keyword_threshold = _as_float(
+            self._get_cfg("keyword_threshold", 0.55, "emotion_detect"), 0.55
+        )
         self.emotion_smooth = _as_bool(self._get_cfg("smooth", True, "emotion_detect"), True)
 
-        self.split_sentence = _as_bool(self._get_cfg("split_sentence", True, "gateway"), True)
-        self.save_on_server = _as_bool(self._get_cfg("save_on_server", False, "gateway"), False)
-        # HTTP 超时只读 gateway，避免与 emotion_detect.timeout 串读
-        gw = self._cat("gateway")
-        self.timeout = max(10, _as_int(gw.get("timeout", self.config.get("timeout", 300)), 300))
-        self.retry_attempts = max(0, _as_int(self._get_cfg("retry_attempts", 3, "gateway"), 3))
-        self.auto_check_on_start = _as_bool(self._get_cfg("auto_check_on_start", True, "gateway"), True)
+        self.split_sentence = _as_bool(self._get_cfg("split_sentence", True, "basic", "gateway"), True)
+        self.save_on_server = _as_bool(self._get_cfg("save_on_server", False, "basic", "gateway"), False)
+        basic = self._cat("basic") or self._cat("gateway")
+        self.timeout = max(10, _as_int(basic.get("timeout", self.config.get("timeout", 300)), 300))
+        self.retry_attempts = max(0, _as_int(self._get_cfg("retry_attempts", 3, "basic", "gateway"), 3))
+        self.auto_check_on_start = _as_bool(
+            self._get_cfg("auto_check_on_start", True, "basic", "gateway"), True
+        )
 
-        # trigger
-        self.global_enable = _as_bool(self._get_cfg("global_enable", True, "trigger"), True)
-        self.prob = _as_float(self._get_cfg("prob", 1.0, "trigger"), 1.0)
-        self.text_limit = _as_int(self._get_cfg("text_limit", 300, "trigger", "simple_settings"), 300)
-        self.cooldown = _as_int(self._get_cfg("cooldown", 0, "trigger"), 0)
+        self.enable_auto_tts = _as_bool(
+            self._get_cfg("enable_auto_tts", True, "basic", "simple_settings"), True
+        )
+        self.global_enable = _as_bool(
+            self._get_cfg("global_enable", True, "basic", "trigger", "gateway"), True
+        )
+        self.prob = _as_float(self._get_cfg("prob", 1.0, "basic", "trigger"), 1.0)
+        self.text_limit = _as_int(self._get_cfg("text_limit", 300, "basic", "trigger", "simple_settings"), 300)
+        self.cooldown = _as_int(self._get_cfg("cooldown", 0, "basic", "trigger"), 0)
 
-        # filter（合并旧 text_process）
+        # —— 过滤 ——
         self.filter_code = _as_bool(self._get_cfg("filter_code", True, "filter", "text_process"), True)
         self.filter_emoji = _as_bool(self._get_cfg("filter_emoji", True, "filter", "text_process"), True)
         self.filter_url = _as_bool(self._get_cfg("filter_url", True, "filter", "text_process"), True)
@@ -327,13 +350,25 @@ class GenieTTSPlugin(Star):
         self.filter_kaomoji = _as_bool(self._get_cfg("filter_kaomoji", True, "filter", "text_process"), True)
         self.trim_silence = _as_bool(self._get_cfg("trim_silence", True, "filter", "text_process"), True)
         self.replace_text = _as_bool(self._get_cfg("replace_text", True, "filter", "text_process"), True)
-        self.send_text_with_audio = _as_bool(self._get_cfg("send_text_with_audio", False, "filter", "text_process"), False)
-        self.clean_before_items = [str(x) for x in (self._get_cfg("clean_before_items", [], "filter", "text_process") or [])]
-        patterns = self._get_cfg("kaomoji_patterns", DEFAULT_KAOMOJI_PATTERNS, "filter", "text_process") or DEFAULT_KAOMOJI_PATTERNS
-        words = self._get_cfg("kaomoji_words", DEFAULT_KAOMOJI_WORDS, "filter", "text_process") or DEFAULT_KAOMOJI_WORDS
-        repl = self._get_cfg("replacement_words", DEFAULT_REPLACEMENTS, "filter", "text_process") or DEFAULT_REPLACEMENTS
+        self.send_text_with_audio = _as_bool(
+            self._get_cfg("send_text_with_audio", False, "filter", "text_process"), False
+        )
+        self.clean_before_items = [
+            str(x) for x in (self._get_cfg("clean_before_items", [], "filter", "text_process") or [])
+        ]
+        patterns = self._get_cfg(
+            "kaomoji_patterns", DEFAULT_KAOMOJI_PATTERNS, "filter", "text_process"
+        ) or DEFAULT_KAOMOJI_PATTERNS
+        words = self._get_cfg(
+            "kaomoji_words", DEFAULT_KAOMOJI_WORDS, "filter", "text_process"
+        ) or DEFAULT_KAOMOJI_WORDS
+        repl = self._get_cfg(
+            "replacement_words", DEFAULT_REPLACEMENTS, "filter", "text_process"
+        ) or DEFAULT_REPLACEMENTS
         self.kaomoji_words = [str(x) for x in words]
-        self.max_repeat_count = _as_int(self._get_cfg("max_repeat_count", 2, "filter", "text_process"), 2)
+        self.max_repeat_count = _as_int(
+            self._get_cfg("max_repeat_count", 2, "filter", "text_process"), 2
+        )
         self._replacements = _parse_replacements([str(x) for x in repl])
         self._kaomoji_regex = []
         for p in patterns:
@@ -341,43 +376,26 @@ class GenieTTSPlugin(Star):
                 self._kaomoji_regex.append(re.compile(str(p)))
             except re.error as e:
                 logger.warning(f"[GenieTTS] 无效颜文字正则 {p}: {e}")
-        self._repeat_regex = re.compile(rf"(.)\1{{{self.max_repeat_count},}}") if self.max_repeat_count > 0 else None
+        self._repeat_regex = (
+            re.compile(rf"(.)\1{{{self.max_repeat_count},}}") if self.max_repeat_count > 0 else None
+        )
 
-        # warmup
+        # —— 预热 ——
         self.warmup_mode = _as_bool(self._get_cfg("enabled", True, "warmup"), True)
         if "warmup_mode" in self.config:
             self.warmup_mode = _as_bool(self.config.get("warmup_mode"), self.warmup_mode)
         self.warmup_tip = _as_bool(self._get_cfg("show_tip", False, "warmup"), False)
         self.warmup_status_ttl = max(3, _as_int(self._get_cfg("status_ttl", 8, "warmup"), 8))
 
-        # split（借鉴 splitter 精简版）
+        # —— 分段 ——
         self.split_enabled = _as_bool(self._get_cfg("enabled", True, "split"), True)
-        self.max_segments = max(1, _as_int(self._get_cfg("max_segments", 5, "split", "simple_settings"), 5))
+        self.max_segments = max(1, _as_int(self._get_cfg("max_segments", 5, "split"), 5))
         self.min_segment_length = max(1, _as_int(self._get_cfg("min_segment_length", 8, "split"), 8))
         sc = self._get_cfg("split_chars", DEFAULT_SPLIT_CHARS, "split") or DEFAULT_SPLIT_CHARS
         self.split_chars = list(sc) if isinstance(sc, (list, tuple)) else list(DEFAULT_SPLIT_CHARS)
         self.protect_pairs = _as_bool(self._get_cfg("protect_pairs", True, "split"), True)
-        self.send_speed = str(self._get_cfg("send_speed", "自然", "split", "simple_settings") or "自然")
+        self.send_speed = match_send_speed(self._get_cfg("send_speed", "自然", "split"), "自然")
         self.tts_each_segment = _as_bool(self._get_cfg("tts_each_segment", True, "split"), True)
-        self.enable_auto_tts = True
-
-        # 简易模式覆盖
-        if self._is_simple:
-            sm = self._cat("simple_settings")
-            self.character = str(sm.get("character", self.character) or self.character)
-            self.enable_auto_tts = _as_bool(sm.get("enable_auto_tts", True), True)
-            self.emotion_detect_enabled = _as_bool(sm.get("enable_emotion", True), True)
-            self.split_enabled = _as_bool(sm.get("enable_split", True), True)
-            self.max_segments = max(1, _as_int(sm.get("max_segments", self.max_segments), self.max_segments))
-            self.send_speed = str(sm.get("send_speed", self.send_speed) or self.send_speed)
-            self.warmup_mode = _as_bool(sm.get("enable_warmup", True), True)
-            self.text_limit = _as_int(sm.get("text_limit", self.text_limit), self.text_limit)
-            en_f = _as_bool(sm.get("enable_filter", True), True)
-            self.filter_code = self.filter_emoji = self.filter_url = self.filter_markdown = self.filter_kaomoji = en_f
-            self.prob = 1.0
-            self.cooldown = 0
-            self.global_enable = True
-            self.tts_each_segment = True
 
 
     @staticmethod
@@ -403,19 +421,22 @@ class GenieTTSPlugin(Star):
         return value.rstrip("/")
 
     def _auth_headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        headers = {"Accept": "*/*", "User-Agent": "AstrBot-GenieTTS/2.3"}
+        headers = {"Accept": "*/*", "User-Agent": "AstrBot-GenieTTS/2.4"}
         if self.api_key: headers["X-API-Key"] = self.api_key
         if extra: headers.update(extra)
         return headers
 
 
+
     def _persist(self) -> None:
-        """写入 AstrBot 插件配置文件（分类结构 + 兼容旧字段）。"""
+        """写入分类配置（兼容旧扁平字段）。"""
         try:
-            self.config["config_mode"] = getattr(self, "config_mode", self.config.get("config_mode", "简易模式"))
+            self.config["config_section"] = getattr(self, "config_section", "基础配置")
+            # 清理旧模式字段干扰
+            if self.config.get("config_mode") in {"简易模式", "完整模式"}:
+                self.config["config_mode"] = self.config["config_section"]
             self.config["base_url"] = self.base_url
             self.config["api_key"] = self.api_key
-            # 兼容顶层字段
             self.config["character"] = self.character
             self.config["language"] = self.language
             self.config["emotion_id"] = self.emotion_id
@@ -425,6 +446,23 @@ class GenieTTSPlugin(Star):
             self.config["enabled_sessions"] = self.enabled_sessions
             self.config["disabled_sessions"] = self.disabled_sessions
 
+            self.config["basic"] = {
+                "character": self.character,
+                "language": self.language,
+                "emotion_id": self.emotion_id,
+                "emotion": self.emotion,
+                "split_sentence": self.split_sentence,
+                "save_on_server": self.save_on_server,
+                "timeout": self.timeout,
+                "retry_attempts": self.retry_attempts,
+                "auto_check_on_start": self.auto_check_on_start,
+                "enable_auto_tts": self.enable_auto_tts,
+                "global_enable": self.global_enable,
+                "prob": self.prob,
+                "text_limit": self.text_limit,
+                "cooldown": self.cooldown,
+            }
+            # 兼容旧 gateway
             self.config["gateway"] = {
                 "character": self.character,
                 "language": self.language,
@@ -465,7 +503,6 @@ class GenieTTSPlugin(Star):
                 "replace_text": self.replace_text,
                 "send_text_with_audio": self.send_text_with_audio,
             }
-            # 兼容旧 text_process
             self.config["text_process"] = dict(self.config["filter"])
             self.config["split"] = {
                 "enabled": self.split_enabled,
@@ -486,17 +523,6 @@ class GenieTTSPlugin(Star):
                 "prob": self.prob,
                 "text_limit": self.text_limit,
                 "cooldown": self.cooldown,
-            }
-            self.config["simple_settings"] = {
-                "character": self.character,
-                "enable_auto_tts": self.enable_auto_tts,
-                "enable_emotion": self.emotion_detect_enabled,
-                "enable_split": self.split_enabled,
-                "max_segments": self.max_segments,
-                "send_speed": self.send_speed,
-                "enable_filter": self.filter_kaomoji,
-                "enable_warmup": self.warmup_mode,
-                "text_limit": self.text_limit,
             }
             if hasattr(self.config, "save_config"):
                 self.config.save_config()
@@ -608,16 +634,29 @@ class GenieTTSPlugin(Star):
             logger.warning(f"[GenieTTS] emotions 拉取失败: {e}")
         self._emotions_cache = cache
 
+
     def _get_voice_profile(self, character: Optional[str] = None) -> Optional[Dict[str, Any]]:
         character = (character or self.character or "").strip()
+        if not character:
+            return None
+        # 精确
         for v in self.voices:
-            if not isinstance(v, dict): continue
+            if not isinstance(v, dict):
+                continue
             if str(v.get("character") or "").strip() == character and _as_bool(v.get("enabled", True), True):
                 return v
+        # 模糊
+        names = [str(v.get("character") or "").strip() for v in self.voices if isinstance(v, dict)]
+        hit, sc = match_name_in_list(character, names, min_score=70)
+        if hit:
+            for v in self.voices:
+                if isinstance(v, dict) and str(v.get("character") or "").strip() == hit:
+                    return v
         for v in self.voices:
-            if isinstance(v, dict) and str(v.get("character") or "").strip() == character:
+            if isinstance(v, dict) and norm_key(v.get("character")) == norm_key(character):
                 return v
         return None
+
 
     def _build_voice_profile(self, char_item: Dict[str, Any]) -> Dict[str, Any]:
         name = str(char_item.get("name") or char_item.get("character") or "").strip()
@@ -691,39 +730,96 @@ class GenieTTSPlugin(Star):
         if lang in {"zh", "en", "hybrid"}:
             self.language = lang
 
+
     def _resolve_emotion_from_label(self, character: str, label: str) -> Tuple[int, str, str]:
-        """返回 (emotion_id, emotion_name, matched_label)"""
+        """返回 (emotion_id, emotion_name, matched_label)。标签/别名模糊匹配。"""
         label = (label or "").strip()
         prof = self._get_voice_profile(character)
-        routes = []
-        if prof and isinstance(prof.get("emotion_routes"), list):
-            routes = [r for r in prof["emotion_routes"] if isinstance(r, dict)]
+        routes: List[Dict[str, Any]] = []
+        if prof:
+            routes = parse_emotion_routes(prof.get("emotion_routes"))
 
-        def match_route(lab: str) -> Optional[Dict[str, Any]]:
-            lab_l = lab.lower()
-            for r in routes:
-                rlab = str(r.get("label") or "").strip()
-                if not rlab: continue
-                if rlab == lab or rlab.lower() == lab_l: return r
-                aliases = [a.strip() for a in str(r.get("aliases") or "").split(",") if a.strip()]
-                if lab in aliases or lab_l in [a.lower() for a in aliases]: return r
-            for r in routes:
-                rlab = str(r.get("label") or "")
-                aliases = str(r.get("aliases") or "")
-                if lab in rlab or rlab in lab or lab in aliases: return r
-            return None
+        # 候选：routes + 网关情绪列表
+        gateway_emos = self._get_emotions_for(character)
 
-        hit = match_route(label) if label else None
-        if not hit and label in SEMANTIC_HINTS:
-            for h in SEMANTIC_HINTS[label]:
-                hit = match_route(h)
-                if hit: break
+        def route_aliases(r: Dict[str, Any]):
+            vals = [r.get("label"), r.get("emotion"), r.get("emotion_id"), r.get("id")]
+            raw_aliases = r.get("aliases")
+            if isinstance(raw_aliases, str):
+                vals.extend(a.strip() for a in raw_aliases.split(",") if a.strip())
+            elif isinstance(raw_aliases, (list, tuple)):
+                vals.extend(raw_aliases)
+            # 语义扩展
+            lab = str(r.get("label") or "")
+            for a in expand_aliases(lab):
+                vals.append(a)
+            return [str(x) for x in vals if x is not None and str(x).strip() != ""]
+
+        hit = None
+        matched = label
+        if label:
+            # 1) routes 模糊
+            hit, sc = pick_by_names(
+                routes, label,
+                name_keys=("label", "emotion", "aliases", "emotion_id"),
+                min_score=70,
+            )
+            if hit is None:
+                # 用别名再试
+                for cand in expand_aliases(label):
+                    hit, sc = pick_by_names(
+                        routes, cand,
+                        name_keys=("label", "emotion", "emotion_id"),
+                        min_score=70,
+                    )
+                    if hit is not None:
+                        matched = str(hit.get("label") or cand)
+                        break
+            else:
+                matched = str(hit.get("label") or label)
+
+            # 2) SEMANTIC_HINTS / 标准情绪
+            if hit is None:
+                for key, hints in SEMANTIC_HINTS.items():
+                    pool = expand_aliases(key) + list(hints or [])
+                    if any(norm_key(label) == norm_key(x) for x in pool):
+                        for h in pool:
+                            hit, _ = pick_by_names(routes, h, name_keys=("label", "emotion"), min_score=70)
+                            if hit is not None:
+                                matched = str(hit.get("label") or key)
+                                break
+                        if hit is not None:
+                            break
+
+            # 3) 直接对网关情绪名/备注模糊
+            if hit is None and gateway_emos:
+                ghit, _ = pick_by_names(
+                    gateway_emos, label,
+                    name_keys=("emotion", "remark", "name", "id"),
+                    min_score=70,
+                )
+                if ghit is not None:
+                    return (
+                        _as_int(ghit.get("id"), 0),
+                        str(ghit.get("emotion") or ghit.get("remark") or ""),
+                        str(ghit.get("emotion") or label),
+                    )
+
         if hit:
-            return _as_int(hit.get("emotion_id"), 0), str(hit.get("emotion") or ""), str(hit.get("label") or label)
+            return (
+                _as_int(hit.get("emotion_id", hit.get("id")), 0),
+                str(hit.get("emotion") or ""),
+                matched or str(hit.get("label") or label),
+            )
 
         if prof:
-            return _as_int(prof.get("default_emotion_id"), 0), str(prof.get("default_emotion") or ""), "默认"
+            return (
+                _as_int(prof.get("default_emotion_id"), 0),
+                str(prof.get("default_emotion") or ""),
+                "默认",
+            )
         return self.emotion_id, self.emotion, "默认"
+
 
     def _get_emotion_provider(self):
         if self.emotion_provider_id:
@@ -908,13 +1004,39 @@ class GenieTTSPlugin(Star):
                 if isinstance(v, dict) and v.get("character"): names.append(str(v["character"]))
         return names
 
+
     def _get_emotions_for(self, character: str) -> List[Dict[str, Any]]:
         character = (character or "").strip()
-        if character in self._emotions_cache: return list(self._emotions_cache[character])
+        if not character:
+            return []
+        # cache 精确
+        if character in self._emotions_cache:
+            return list(self._emotions_cache[character])
+        # cache 模糊 key
+        cache_keys = list(self._emotions_cache.keys())
+        hit, _ = match_name_in_list(character, cache_keys, min_score=70)
+        if hit and hit in self._emotions_cache:
+            return list(self._emotions_cache[hit])
         for item in self._characters_cache:
-            if (item.get("name") or item.get("character")) == character:
+            n = str(item.get("name") or item.get("character") or "").strip()
+            if not n:
+                continue
+            if n == character or norm_key(n) == norm_key(character):
                 return list(item.get("emotions") or item.get("references") or [])
+        # 模糊角色
+        names = [
+            str(it.get("name") or it.get("character") or "").strip()
+            for it in self._characters_cache
+            if isinstance(it, dict)
+        ]
+        hit2, _ = match_name_in_list(character, names, min_score=70)
+        if hit2:
+            for item in self._characters_cache:
+                n = str(item.get("name") or item.get("character") or "").strip()
+                if n == hit2:
+                    return list(item.get("emotions") or item.get("references") or [])
         return []
+
 
     def _pick_default_emotion(self, character: str) -> Tuple[int, str]:
         prof = self._get_voice_profile(character)
@@ -927,9 +1049,18 @@ class GenieTTSPlugin(Star):
         if emos: return _as_int(emos[0].get("id"), 0), str(emos[0].get("emotion") or emos[0].get("remark") or "")
         return 0, ""
 
+
     def _apply_character(self, character: str, *, persist: bool = True, auto_emotion: bool = True) -> str:
         character = (character or "").strip()
-        if not character: raise ValueError("角色名不能为空")
+        if not character:
+            raise ValueError("角色名不能为空")
+        # 模糊对齐到已知角色名
+        known = self._list_character_names()
+        hit, sc = match_name_in_list(character, known, min_score=70)
+        if hit:
+            if norm_key(hit) != norm_key(character):
+                logger.info(f"[GenieTTS] character fuzzy: {character!r} -> {hit!r} score={sc}")
+            character = hit
         self.character = character
         msg = f"角色 => {character}"
         if auto_emotion:
@@ -937,30 +1068,58 @@ class GenieTTSPlugin(Star):
             self.emotion_id, self.emotion = eid, ename
             msg += f" | 情绪 => {eid}:{ename or '默认'}"
         self._model_hot = False
-        if persist: self._persist()
+        if persist:
+            self._persist()
         return msg
 
-    def _apply_emotion(self, raw: str, *, character: Optional[str] = None, persist: bool = True, session_state: Optional[SessionState] = None) -> str:
+
+
+    def _apply_emotion(
+        self,
+        raw: str,
+        *,
+        character: Optional[str] = None,
+        persist: bool = True,
+        session_state: Optional[SessionState] = None,
+    ) -> str:
         raw = (raw or "").strip()
-        char = character or (session_state.character if session_state and session_state.character else None) or self.character
+        char = (
+            character
+            or (session_state.character if session_state and session_state.character else None)
+            or self.character
+        )
+        # 角色名也做一次模糊
+        known = self._list_character_names()
+        chit, _ = match_name_in_list(char, known, min_score=70)
+        if chit:
+            char = chit
         emos = self._get_emotions_for(char)
         eid, ename = 0, ""
-        if raw.isdigit():
-            num = int(raw)
+        if raw.isdigit() or (raw.startswith("#") and raw[1:].isdigit()):
+            num = int(raw[1:] if raw.startswith("#") else raw)
             by_id = next((e for e in emos if _as_int(e.get("id"), -1) == num), None)
             if by_id:
                 eid, ename = num, str(by_id.get("emotion") or by_id.get("remark") or "")
             elif 1 <= num <= len(emos):
-                e = emos[num - 1]; eid = _as_int(e.get("id"), 0); ename = str(e.get("emotion") or e.get("remark") or "")
-            else: eid = num
+                e = emos[num - 1]
+                eid = _as_int(e.get("id"), 0)
+                ename = str(e.get("emotion") or e.get("remark") or "")
+            else:
+                eid = num
         else:
-            # 先当感知标签
-            eid, ename, _ = self._resolve_emotion_from_label(char, raw)
+            eid, ename, matched = self._resolve_emotion_from_label(char, raw)
             if not eid and not ename:
-                ename = raw
-                for e in emos:
-                    label = str(e.get("emotion") or ""); remark = str(e.get("remark") or "")
-                    if raw in {label, remark}: eid = _as_int(e.get("id"), 0); ename = label or remark; break
+                # 网关情绪模糊
+                ghit, _ = pick_by_names(
+                    emos, raw, name_keys=("emotion", "remark", "name", "id"), min_score=70
+                )
+                if ghit is not None:
+                    eid = _as_int(ghit.get("id"), 0)
+                    ename = str(ghit.get("emotion") or ghit.get("remark") or raw)
+                else:
+                    ename = raw
+            elif matched:
+                pass
         if session_state is not None:
             session_state.emotion_id = eid if eid > 0 else None
             session_state.emotion = ename or raw
@@ -968,8 +1127,10 @@ class GenieTTSPlugin(Star):
         else:
             self.emotion_id = eid if eid > 0 else 0
             self.emotion = ename or raw
-            if persist: self._persist()
+            if persist:
+                self._persist()
         return f"角色={char} 情绪={eid or '-'}:{ename or raw}"
+
 
     async def _fetch_public_status(self, force: bool = False) -> Dict[str, Any]:
         now = time.time()
@@ -1312,14 +1473,15 @@ class GenieTTSPlugin(Star):
     @gentts_group.command("help", alias={"帮助", "h", "?"})
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
-            "🎙️ Genie TTS v2.3\n"
-            "gentts test/on/off/status\n"
-            "gentts list / characters / emotions\n"
-            "gentts use <角色> [情绪] / char / emo\n"
-            "gentts sync [force]  同步网关模型到层叠配置\n"
-            "gentts filter <文本> 预览过滤效果\n""gentts emotion <文本> 预览情绪识别\n"
-            "gentts voices        查看音色映射\n"
-            "管理员: wake/sleep/unload/reload/globalon/off"
+            "🎙️ Genie TTS v2.4\n"
+            "分类：基础配置 / 音色模型 / 情绪感知 / 过滤处理 / 分段发送 / 预热触发\n"
+            "gentts test <文本> | filter <文本> | split <文本>\n"
+            "gentts emotion <文本>  情绪预览（支持别名）\n"
+            "gentts status / sync / voices / list\n"
+            "gentts use <角色> [情绪]  （模糊匹配）\n"
+            "gentts on|off|globalon|globaloff\n"
+            "gentts wake|sleep|unload|reload\n"
+            "提示：与 splitter 同时启用可能双重分段"
         )
 
     @gentts_group.command("test", alias={"t"})
@@ -1442,7 +1604,7 @@ class GenieTTSPlugin(Star):
             f"📚 音色配置: {len(self.voices)} 个 | 同步: {'是' if self._voices_synced or self.voices else '否'}\n"
             f"🧠 情绪识别: {'开' if self.emotion_detect_enabled else '关'}({self.emotion_mode}) 平滑={'开' if self.emotion_smooth else '关'} | 颜文字: {'开' if self.filter_kaomoji else '关'}\n"
             f"✂️ 分段: {'开' if self.split_enabled else '关'} max={self.max_segments} 速度={self.send_speed} 逐段TTS={'开' if self.tts_each_segment else '关'}\n"
-            f"⚙️ 配置模式: {self.config_mode}\n"
+            f"⚙️ 配置分类: {self.config_section}\n"
             f"⚡ 会话: {'启用' if enabled else '禁用'} ({mode}) 概率={self.prob} 限制={self.text_limit or '无'}{last}"
         )
 

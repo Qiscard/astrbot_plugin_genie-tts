@@ -1,219 +1,165 @@
 {
-  "config_mode": {
-    "description": "配置模式",
+  "config_section": {
+    "description": "配置分类（切换查看不同功能模块）",
     "type": "string",
-    "options": [
-      "简易模式",
-      "完整模式"
-    ],
-    "default": "简易模式",
-    "hint": "简易：几个核心开关；完整：按「网关/音色/情绪/过滤/分段/预热/触发」分类精细配置。切换后请保存并重载。"
+    "default": "基础配置",
+    "options": ["基础配置", "音色模型", "情绪感知", "过滤处理", "分段发送", "预热触发"],
+    "hint": "按功能分类管理，不再使用简易/完整模式"
   },
   "base_url": {
-    "description": "Gateway 地址",
+    "description": "Genie TTS Gateway 地址",
     "type": "string",
     "default": "http://127.0.0.1:19880",
-    "hint": "如 http://211.154.18.252:19880"
+    "hint": "例如 http://127.0.0.1:19880"
   },
   "api_key": {
-    "description": "API Key",
+    "description": "API Key（X-API-Key）",
     "type": "string",
-    "default": ""
+    "default": "",
+    "hint": "必填，否则不会自动 TTS"
   },
-  "simple_settings": {
-    "description": "简易设置",
+  "basic": {
+    "description": "基础配置",
     "type": "object",
-    "condition": {
-      "config_mode": "简易模式"
-    },
-    "hint": "开箱即用。完整能力请切到完整模式。",
+    "condition": { "config_section": "基础配置" },
+    "hint": "角色、语言、触发概率、冷却等",
     "items": {
       "character": {
-        "description": "默认角色",
+        "description": "默认角色/模型名",
         "type": "string",
-        "default": "lxh"
-      },
-      "enable_auto_tts": {
-        "description": "自动把 AI 回复转语音",
-        "type": "bool",
-        "default": true
-      },
-      "enable_emotion": {
-        "description": "情绪识别自动切音色",
-        "type": "bool",
-        "default": true
-      },
-      "enable_split": {
-        "description": "长回复分段发送",
-        "type": "bool",
-        "default": true
-      },
-      "max_segments": {
-        "description": "最多几段",
-        "type": "int",
-        "default": 5
-      },
-      "send_speed": {
-        "description": "发送节奏",
-        "type": "string",
-        "options": [
-          "自然",
-          "快速",
-          "慢速"
-        ],
-        "default": "自然"
-      },
-      "enable_filter": {
-        "description": "过滤颜文字/链接/代码等",
-        "type": "bool",
-        "default": true
-      },
-      "enable_warmup": {
-        "description": "休眠时先发文本并后台预热",
-        "type": "bool",
-        "default": true
-      },
-      "text_limit": {
-        "description": "超长跳过 TTS（0不限）",
-        "type": "int",
-        "default": 300
-      }
-    }
-  },
-  "gateway": {
-    "description": "网关与合成",
-    "type": "object",
-    "condition": {
-      "config_mode": "完整模式"
-    },
-    "items": {
-      "character": {
-        "description": "默认角色",
-        "type": "string",
-        "default": "lxh"
+        "default": "lxh",
+        "hint": "支持模糊匹配，如 LXH / lxh"
       },
       "language": {
         "description": "语言",
         "type": "string",
-        "options": [
-          "zh",
-          "en",
-          "hybrid"
-        ],
-        "default": "zh"
+        "default": "zh",
+        "options": ["zh", "en", "hybrid"],
+        "hint": "也支持中文/英文/双语等别名输入"
       },
       "emotion_id": {
-        "description": "默认情绪ID",
+        "description": "默认情绪 ID（0=默认）",
         "type": "int",
         "default": 0
       },
       "emotion": {
-        "description": "默认情绪名",
+        "description": "默认情绪名（可空）",
         "type": "string",
-        "default": ""
+        "default": "",
+        "hint": "支持别名：开心/高兴/happy 等"
       },
       "split_sentence": {
-        "description": "服务端分句",
+        "description": "Gateway 侧分句合成",
         "type": "bool",
         "default": true
       },
       "save_on_server": {
-        "description": "服务端落盘",
+        "description": "在服务端保存音频",
         "type": "bool",
         "default": false
       },
       "timeout": {
-        "description": "超时秒",
+        "description": "HTTP 超时（秒）",
         "type": "int",
         "default": 300
       },
       "retry_attempts": {
-        "description": "重试次数",
+        "description": "失败重试次数",
         "type": "int",
         "default": 3
       },
       "auto_check_on_start": {
-        "description": "启动检查/同步音色",
+        "description": "启动时检查 Gateway 并同步音色",
         "type": "bool",
         "default": true
+      },
+      "enable_auto_tts": {
+        "description": "启用自动 TTS（装饰 LLM 回复）",
+        "type": "bool",
+        "default": true
+      },
+      "global_enable": {
+        "description": "全局默认启用（黑名单模式）",
+        "type": "bool",
+        "default": true,
+        "hint": "开=默认启用可用 off 禁用；关=默认禁用可用 on 启用"
+      },
+      "prob": {
+        "description": "自动 TTS 触发概率 0~1",
+        "type": "float",
+        "default": 1.0
+      },
+      "text_limit": {
+        "description": "超过此字数不自动 TTS（0=不限制）",
+        "type": "int",
+        "default": 300
+      },
+      "cooldown": {
+        "description": "同一会话冷却秒数",
+        "type": "int",
+        "default": 0
       }
     }
   },
   "voices": {
-    "description": "音色配置（模型层叠）",
+    "description": "层叠音色（按模型配置情绪映射）",
     "type": "template_list",
-    "condition": {
-      "config_mode": "完整模式"
-    },
-    "hint": "首次连接自动同步。每个模型下配置情绪感知映射。",
-    "default": [],
-    "templates": {
-      "voice": {
-        "name": "音色/模型",
-        "display_item": "character",
+    "condition": { "config_section": "音色模型" },
+    "hint": "首次启动可自动从 Gateway 同步；每个模型单独配置情绪路由",
+    "config_template": {
+      "character": {
+        "description": "模型/角色名",
+        "type": "string",
+        "default": "lxh"
+      },
+      "enabled": {
+        "description": "启用此音色配置",
+        "type": "bool",
+        "default": true
+      },
+      "language": {
+        "description": "该角色默认语言",
+        "type": "string",
+        "default": "zh",
+        "options": ["zh", "en", "hybrid"]
+      },
+      "default_emotion_id": {
+        "description": "默认情绪 ID",
+        "type": "int",
+        "default": 0
+      },
+      "default_emotion": {
+        "description": "默认情绪名",
+        "type": "string",
+        "default": ""
+      },
+      "emotion_routes": {
+        "description": "情绪感知映射",
+        "type": "list",
+        "default": [],
+        "hint": "支持 dict 或字符串：开心->4:标准 / 悲伤|2|低落",
         "items": {
-          "character": {
-            "description": "模型名",
-            "type": "string",
-            "default": "lxh"
-          },
-          "enabled": {
-            "description": "启用",
-            "type": "bool",
-            "default": true
-          },
-          "language": {
-            "description": "语言",
-            "type": "string",
-            "options": [
-              "zh",
-              "en",
-              "hybrid"
-            ],
-            "default": "zh"
-          },
-          "default_emotion_id": {
-            "description": "默认情绪ID",
-            "type": "int",
-            "default": 0
-          },
-          "default_emotion": {
-            "description": "默认情绪名",
-            "type": "string",
-            "default": ""
-          },
-          "emotion_routes": {
-            "description": "情绪感知映射",
-            "type": "template_list",
-            "default": [],
-            "templates": {
-              "route": {
-                "name": "情绪映射",
-                "display_item": "label",
-                "items": {
-                  "label": {
-                    "description": "感知标签",
-                    "type": "string",
-                    "default": "平静",
-                    "hint": "开心/悲伤/生气/兴奋/平静/..."
-                  },
-                  "aliases": {
-                    "description": "别名(逗号)",
-                    "type": "string",
-                    "default": ""
-                  },
-                  "emotion_id": {
-                    "description": "网关情绪ID",
-                    "type": "int",
-                    "default": 0
-                  },
-                  "emotion": {
-                    "description": "网关情绪名",
-                    "type": "string",
-                    "default": ""
-                  }
-                }
-              }
+          "type": "object",
+          "items": {
+            "label": {
+              "description": "感知标签（开心/悲伤/...）",
+              "type": "string",
+              "default": "开心"
+            },
+            "aliases": {
+              "description": "别名（逗号分隔）",
+              "type": "string",
+              "default": ""
+            },
+            "emotion_id": {
+              "description": "映射到的情绪 ID",
+              "type": "int",
+              "default": 0
+            },
+            "emotion": {
+              "description": "映射到的情绪名",
+              "type": "string",
+              "default": ""
             }
           }
         }
@@ -223,107 +169,98 @@
   "model_select": {
     "description": "模型同步",
     "type": "object",
-    "condition": {
-      "config_mode": "完整模式"
-    },
+    "condition": { "config_section": "音色模型" },
     "items": {
       "auto_sync_voices": {
-        "description": "首次自动同步音色",
+        "description": "启动时自动同步音色列表",
         "type": "bool",
         "default": true
       },
       "auto_select_emotion": {
-        "description": "切角色自动默认情绪",
+        "description": "切换角色时自动选默认情绪",
         "type": "bool",
         "default": true
       },
       "overwrite_on_sync": {
-        "description": "sync时覆盖已有映射",
+        "description": "同步时覆盖已有 voices 映射",
         "type": "bool",
         "default": false
       }
     }
   },
   "emotion_detect": {
-    "description": "LLM/关键词情绪感知",
+    "description": "LLM 情绪感知",
     "type": "object",
-    "condition": {
-      "config_mode": "完整模式"
-    },
-    "hint": "参考 realistic-persona：关键词优先，LLM 兜底",
+    "condition": { "config_section": "情绪感知" },
+    "hint": "关键词 / LLM / 混合；识别结果会映射到 voices 情绪路由",
     "items": {
       "enabled": {
-        "description": "启用",
+        "description": "启用情绪感知",
         "type": "bool",
         "default": true
       },
       "mode": {
-        "description": "模式",
+        "description": "识别模式",
         "type": "string",
-        "options": [
-          "hybrid",
-          "keyword",
-          "llm"
-        ],
-        "default": "hybrid"
+        "default": "hybrid",
+        "options": ["keyword", "llm", "hybrid"],
+        "hint": "也支持：关键词/大模型/混合 等别名"
       },
       "provider_id": {
-        "description": "LLM提供商ID(空=默认)",
+        "description": "情绪识别用的 LLM Provider ID（可空=默认）",
         "type": "string",
         "default": ""
       },
       "labels": {
-        "description": "标签",
+        "description": "可识别情绪标签（逗号分隔）",
         "type": "string",
         "default": "开心,悲伤,生气,兴奋,平静,困惑,无聊,好奇,惊讶,焦虑,默认"
       },
       "keyword_threshold": {
-        "description": "关键词置信阈值",
+        "description": "关键词置信阈值（hybrid/keyword）",
         "type": "float",
         "default": 0.55
       },
       "smooth": {
-        "description": "会话平滑",
+        "description": "会话情绪平滑（减少乱跳）",
         "type": "bool",
         "default": true
       },
       "timeout": {
-        "description": "LLM超时秒",
+        "description": "LLM 识别超时（秒）",
         "type": "int",
         "default": 12
       },
       "fallback_label": {
-        "description": "回退标签",
+        "description": "识别失败回退标签",
         "type": "string",
         "default": "默认"
       }
     }
   },
   "filter": {
-    "description": "文本屏蔽/清洗",
+    "description": "过滤处理",
     "type": "object",
-    "condition": {
-      "config_mode": "完整模式"
-    },
-    "hint": "借鉴 splitter 清理 + tts_sanitizer 颜文字",
+    "condition": { "config_section": "过滤处理" },
+    "hint": "代码/表情/链接/Markdown/颜文字/替换词/静音裁剪",
     "items": {
       "filter_code": {
-        "description": "过滤代码",
+        "description": "过滤代码块",
         "type": "bool",
         "default": true
       },
       "filter_emoji": {
-        "description": "过滤Emoji/QQ表情",
+        "description": "过滤 Emoji / QQ 表情",
         "type": "bool",
         "default": true
       },
       "filter_url": {
-        "description": "过滤URL",
+        "description": "过滤链接与路径",
         "type": "bool",
         "default": true
       },
       "filter_markdown": {
-        "description": "过滤Markdown",
+        "description": "过滤 Markdown 标记",
         "type": "bool",
         "default": true
       },
@@ -333,77 +270,50 @@
         "default": true
       },
       "clean_before_items": {
-        "description": "删除指定文本(每行一条)",
+        "description": "额外删除词（精确子串）",
         "type": "list",
-        "items": {
-          "type": "string"
-        },
-        "default": []
+        "default": [],
+        "items": { "type": "string" }
       },
       "replacement_words": {
-        "description": "替换 原|新",
+        "description": "替换词（原词|新词）",
         "type": "list",
-        "items": {
-          "type": "string"
-        },
-        "default": [
-          "233|哈哈哈",
-          "666|厉害",
-          "555|呜呜呜"
-        ]
+        "default": ["233|哈哈哈", "666|厉害", "555|呜呜呜"],
+        "items": { "type": "string" }
       },
       "kaomoji_words": {
-        "description": "颜文字删词",
+        "description": "颜文字关键词",
         "type": "list",
-        "items": {
-          "type": "string"
-        },
-        "default": [
-          "ω",
-          "Ω",
-          "σ",
-          "Σ",
-          "ε",
-          "д",
-          "Д",
-          "orz",
-          "OTZ",
-          "QAQ",
-          "QWQ",
-          "TAT",
-          "TUT",
-          "www"
-        ]
+        "default": ["ω", "Ω", "σ", "Σ", "ε", "д", "Д", "orz", "OTZ", "QAQ", "QWQ", "TAT", "TUT", "www"],
+        "items": { "type": "string" }
       },
       "max_repeat_count": {
-        "description": "重复字压缩(0关)",
+        "description": "连续重复字符上限（0=不限制）",
         "type": "int",
         "default": 2
       },
       "trim_silence": {
-        "description": "裁剪音频静音",
+        "description": "裁剪音频首尾静音（需 pydub）",
         "type": "bool",
         "default": true
       },
       "replace_text": {
-        "description": "语音替换原文",
+        "description": "用语音替换原文本",
         "type": "bool",
         "default": true
       },
       "send_text_with_audio": {
-        "description": "语音附带文本",
+        "description": "语音同时附带文本",
         "type": "bool",
         "default": false
       }
     }
   },
   "split": {
-    "description": "分段发送（借鉴 splitter）",
+    "description": "分段发送",
     "type": "object",
-    "condition": {
-      "config_mode": "完整模式"
-    },
-    "hint": "长回复拆多段，按节奏发送；每段可单独合成语音",
+    "condition": { "config_section": "分段发送" },
+    "hint": "借鉴 splitter：按句切分、延迟、逐段 TTS",
     "items": {
       "enabled": {
         "description": "启用分段",
@@ -411,106 +321,61 @@
         "default": true
       },
       "max_segments": {
-        "description": "最多段数",
+        "description": "最大段数",
         "type": "int",
         "default": 5
       },
       "min_segment_length": {
-        "description": "最短段长",
+        "description": "过短段合并阈值（字）",
         "type": "int",
         "default": 8
       },
       "split_chars": {
-        "description": "分段符号",
+        "description": "分段分隔符",
         "type": "list",
-        "items": {
-          "type": "string"
-        },
-        "default": [
-          "。",
-          "？",
-          "！",
-          "?",
-          "!",
-          "；",
-          ";",
-          "\\n",
-          "…"
-        ]
+        "default": ["。", "？", "！", "?", "!", "；", ";", "\\n", "…"],
+        "items": { "type": "string" }
       },
       "protect_pairs": {
-        "description": "保护括号引号内不断开",
+        "description": "保护未闭合引号/括号内不分段",
         "type": "bool",
         "default": true
       },
       "send_speed": {
-        "description": "发送节奏",
+        "description": "段间发送速度",
         "type": "string",
-        "options": [
-          "自然",
-          "快速",
-          "慢速",
-          "随机"
-        ],
-        "default": "自然"
+        "default": "自然",
+        "options": ["自然", "快速", "慢速", "固定", "随机"],
+        "hint": "也支持 fast/slow/natural 等英文别名"
       },
       "tts_each_segment": {
-        "description": "每段都合成语音",
+        "description": "每一段都合成语音",
         "type": "bool",
-        "default": true
+        "default": true,
+        "hint": "关闭则整段一次合成"
       }
     }
   },
   "warmup": {
-    "description": "预热模式",
+    "description": "预热",
     "type": "object",
-    "condition": {
-      "config_mode": "完整模式"
-    },
+    "condition": { "config_section": "预热触发" },
+    "hint": "模型休眠时文本降级，热机后恢复 TTS",
     "items": {
       "enabled": {
-        "description": "休眠时文本降级+预热",
+        "description": "启用预热降级",
         "type": "bool",
         "default": true
       },
       "show_tip": {
-        "description": "附加预热提示",
+        "description": "预热时附加提示文案",
         "type": "bool",
         "default": false
       },
       "status_ttl": {
-        "description": "状态缓存秒",
+        "description": "状态缓存秒数",
         "type": "int",
         "default": 8
-      }
-    }
-  },
-  "trigger": {
-    "description": "触发控制",
-    "type": "object",
-    "condition": {
-      "config_mode": "完整模式"
-    },
-    "items": {
-      "global_enable": {
-        "description": "全局开(黑名单)/关(白名单)",
-        "type": "bool",
-        "default": true
-      },
-      "prob": {
-        "description": "触发概率",
-        "type": "float",
-        "default": 1.0
-      },
-      "text_limit": {
-        "description": "长度上限(0不限)",
-        "type": "int",
-        "default": 300
-      },
-      "cooldown": {
-        "description": "冷却秒",
-        "type": "int",
-        "default": 0
       }
     }
   }

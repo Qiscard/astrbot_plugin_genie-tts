@@ -9,7 +9,7 @@ import re
 from typing import List, Sequence
 
 
-DEFAULT_SPLIT_CHARS = ["。", "？", "！", "?", "!", "；", ";", "\n", "…"]
+DEFAULT_SPLIT_CHARS = ["。", "？", "！", "?", "!", "…", "."]
 
 PAIR_MAP = {
     '"': '"', "“": "”", "《": "》", "（": "）", "(": ")",
@@ -83,81 +83,60 @@ def split_text(
     text: str,
     *,
     split_chars: Sequence[str] | None = None,
-    max_segments: int = 5,
-    min_segment_length: int = 8,
+    max_segments: int = 0,
+    min_segment_length: int = 0,
     protect_pairs: bool = True,
 ) -> List[str]:
+    """按完整句末标点分句，不合并短句，也不按数量重切。"""
     text = (text or "").strip()
     if not text:
         return []
-    chars = [unescape(c) for c in (split_chars or DEFAULT_SPLIT_CHARS) if str(c).strip() != ""]
-    if not chars:
-        return [text]
 
-    # 长的分隔符优先
-    chars_sorted = sorted(set(chars), key=len, reverse=True)
-    escaped = [re.escape(c) for c in chars_sorted]
-    pattern = re.compile("(" + "|".join(escaped) + "+)")
+    configured = [unescape(str(char)) for char in (split_chars or DEFAULT_SPLIT_CHARS)]
+    sentence_endings = {"。", "？", "！", "?", "!", "…", "."}
+    endings = {char for char in configured if char in sentence_endings}
+    if not endings:
+        endings = sentence_endings
 
-    parts = pattern.split(text)
-    chunks: List[str] = []
-    buf = ""
-    for part in parts:
-        if part is None or part == "":
-            continue
-        if pattern.fullmatch(part):
-            # 分隔符贴到当前段末尾
-            buf += part
-            if protect_pairs and _in_unbalanced_pairs(buf):
+    closing_chars = set("\\\"'”’»》〉】）)]}>")
+    segments: List[str] = []
+    buffer: List[str] = []
+    pending_boundary = False
+
+    def flush() -> None:
+        value = "".join(buffer).strip()
+        if value:
+            segments.append(value)
+        buffer.clear()
+
+    for index, char in enumerate(text):
+        if pending_boundary:
+            if char in closing_chars:
+                buffer.append(char)
+                flush()
+                pending_boundary = False
                 continue
-            if buf.strip():
-                chunks.append(buf.strip())
-            buf = ""
-        else:
-            buf += part
-    if buf.strip():
-        chunks.append(buf.strip())
+            if char in endings or char.isspace():
+                buffer.append(char)
+                continue
+            if protect_pairs and _in_unbalanced_pairs("".join(buffer)):
+                buffer.append(char)
+                continue
+            flush()
+            pending_boundary = False
 
-    if not chunks:
-        return [text]
-
-    # 合并过短段
-    merged: List[str] = []
-    for ch in chunks:
-        if merged and len(ch) < min_segment_length:
-            merged[-1] = (merged[-1] + ch).strip()
-        elif merged and len(merged[-1]) < min_segment_length:
-            merged[-1] = (merged[-1] + ch).strip()
-        else:
-            merged.append(ch)
-
-    # 限制最大段数：均匀合并
-    max_segments = max(1, int(max_segments or 1))
-    if len(merged) <= max_segments:
-        return merged
-
-    # 按目标段数重切
-    total = len("".join(merged))
-    ideal = max(min_segment_length, total // max_segments)
-    out: List[str] = []
-    cur = ""
-    for ch in merged:
-        if not cur:
-            cur = ch
+        buffer.append(char)
+        if char not in endings:
             continue
-        if len(cur) >= ideal and len(out) < max_segments - 1:
-            out.append(cur.strip())
-            cur = ch
-        else:
-            cur = (cur + ch).strip()
-    if cur.strip():
-        out.append(cur.strip())
-    # 若仍超限，硬合并尾部
-    while len(out) > max_segments:
-        tail = out.pop()
-        out[-1] = (out[-1] + tail).strip()
-    return [x for x in out if x]
+        if char == ".":
+            previous = text[index - 1] if index > 0 else ""
+            following = text[index + 1] if index + 1 < len(text) else ""
+            if previous.isdigit() and following.isdigit():
+                continue
+        pending_boundary = True
 
+    flush()
+    return segments or [text]
 
 def calc_delay(text: str, style: str = "自然", *, fixed: float = 1.0) -> float:
     style = (style or "自然").strip()

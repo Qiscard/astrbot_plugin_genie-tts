@@ -1,10 +1,18 @@
 {
   "config_section": {
-    "description": "配置分类（切换查看不同功能模块）",
+    "description": "配置分类",
     "type": "string",
     "default": "基础配置",
-    "options": ["基础配置", "音色模型", "情绪感知", "过滤处理", "分段发送", "预热触发"],
-    "hint": "按功能分类管理，不再使用简易/完整模式"
+    "options": [
+      "基础配置",
+      "自动模型",
+      "情绪感知",
+      "文本处理",
+      "分段发送",
+      "触发策略",
+      "预热"
+    ],
+    "hint": "基础配置只保留连接和默认行为；角色、语言、情绪和音色目录默认由 Gateway 自动获取。"
   },
   "base_url": {
     "description": "Genie TTS Gateway 地址",
@@ -19,39 +27,30 @@
     "hint": "必填，否则不会自动 TTS"
   },
   "basic": {
-    "description": "基础配置",
+    "description": "连接后的默认行为",
     "type": "object",
-    "condition": { "config_section": "基础配置" },
-    "hint": "角色、语言、触发概率、冷却等",
+    "condition": {
+      "config_section": "基础配置"
+    },
+    "hint": "默认角色、语言和情绪由 Gateway 目录自动维护；手动选择可用 gentts set global_*。",
     "items": {
       "character": {
-        "description": "默认角色/模型名",
+        "description": "默认角色",
         "type": "string",
-        "default": "lxh",
-        "hint": "支持模糊匹配，如 LXH / lxh"
+        "default": "auto",
+        "hint": "auto = 从 Gateway 目录选择 is_default 角色；需要固定时填写角色名，角色列表可用 gentts characters 查看。"
       },
       "language": {
-        "description": "语言",
+        "description": "默认语言",
         "type": "string",
-        "default": "zh",
-        "options": ["zh", "en", "hybrid"],
-        "hint": "也支持中文/英文/双语等别名输入"
-      },
-      "emotion_id": {
-        "description": "默认情绪 ID（0=默认）",
-        "type": "int",
-        "default": 0
-      },
-      "emotion": {
-        "description": "默认情绪名（可空）",
-        "type": "string",
-        "default": "",
-        "hint": "支持别名：开心/高兴/happy 等"
-      },
-      "split_sentence": {
-        "description": "Gateway 侧分句合成",
-        "type": "bool",
-        "default": true
+        "default": "auto",
+        "options": [
+          "auto",
+          "zh",
+          "en",
+          "hybrid"
+        ],
+        "hint": "auto = 使用所选角色默认参考音频的语言。"
       },
       "save_on_server": {
         "description": "在服务端保存音频",
@@ -72,94 +71,88 @@
         "description": "启动时检查 Gateway 并同步音色",
         "type": "bool",
         "default": true
-      },
-      "enable_auto_tts": {
-        "description": "启用自动 TTS（装饰 LLM 回复）",
-        "type": "bool",
-        "default": true
-      },
-      "global_enable": {
-        "description": "全局默认启用（黑名单模式）",
-        "type": "bool",
-        "default": true,
-        "hint": "开=默认启用可用 off 禁用；关=默认禁用可用 on 启用"
-      },
-      "prob": {
-        "description": "自动 TTS 触发概率 0~1",
-        "type": "float",
-        "default": 1.0
-      },
-      "text_limit": {
-        "description": "超过此字数不自动 TTS（0=不限制）",
-        "type": "int",
-        "default": 300
-      },
-      "cooldown": {
-        "description": "同一会话冷却秒数",
-        "type": "int",
-        "default": 0
       }
     }
   },
   "voices": {
-    "description": "层叠音色（按模型配置情绪映射）",
+    "description": "Gateway 自动同步的音色与情绪路由",
     "type": "template_list",
-    "condition": { "config_section": "音色模型" },
-    "hint": "首次启动可自动从 Gateway 同步；每个模型单独配置情绪路由",
-    "config_template": {
-      "character": {
-        "description": "模型/角色名",
-        "type": "string",
-        "default": "lxh"
-      },
-      "enabled": {
-        "description": "启用此音色配置",
-        "type": "bool",
-        "default": true
-      },
-      "language": {
-        "description": "该角色默认语言",
-        "type": "string",
-        "default": "zh",
-        "options": ["zh", "en", "hybrid"]
-      },
-      "default_emotion_id": {
-        "description": "默认情绪 ID",
-        "type": "int",
-        "default": 0
-      },
-      "default_emotion": {
-        "description": "默认情绪名",
-        "type": "string",
-        "default": ""
-      },
-      "emotion_routes": {
-        "description": "情绪感知映射",
-        "type": "list",
-        "default": [],
-        "hint": "支持 dict 或字符串：开心->4:标准 / 悲伤|2|低落",
+    "condition": {
+      "config_section": "自动模型"
+    },
+    "hint": "由启动连接或 gentts sync 自动写入。不要手工填写 emotion_routes；仅在需要自定义语义映射时编辑后使用 gentts sync force 覆盖。",
+    "default": [],
+    "templates": {
+      "voice": {
+        "name": "音色/模型",
+        "display_item": "character",
         "items": {
-          "type": "object",
-          "items": {
-            "label": {
-              "description": "感知标签（开心/悲伤/...）",
-              "type": "string",
-              "default": "开心"
-            },
-            "aliases": {
-              "description": "别名（逗号分隔）",
-              "type": "string",
-              "default": ""
-            },
-            "emotion_id": {
-              "description": "映射到的情绪 ID",
-              "type": "int",
-              "default": 0
-            },
-            "emotion": {
-              "description": "映射到的情绪名",
-              "type": "string",
-              "default": ""
+          "character": {
+            "description": "模型/角色名",
+            "type": "string",
+            "hint": "如 lxh / manbo / feibi",
+            "default": "lxh"
+          },
+          "enabled": {
+            "description": "启用此音色配置",
+            "type": "bool",
+            "default": true
+          },
+          "language": {
+            "description": "该角色默认语言",
+            "type": "string",
+            "options": [
+              "zh",
+              "en",
+              "hybrid"
+            ],
+            "default": "zh"
+          },
+          "default_emotion_id": {
+            "description": "默认情绪 ID",
+            "type": "int",
+            "default": 0
+          },
+          "default_emotion": {
+            "description": "默认情绪名",
+            "type": "string",
+            "default": ""
+          },
+          "emotion_routes": {
+            "description": "情绪感知映射",
+            "type": "template_list",
+            "default": [],
+            "hint": "感知标签建议使用：开心/悲伤/生气/兴奋/平静/困惑/无聊/好奇/惊讶/焦虑",
+            "templates": {
+              "route": {
+                "name": "情绪映射",
+                "display_item": "label",
+                "items": {
+                  "label": {
+                    "description": "感知情绪标签",
+                    "type": "string",
+                    "hint": "如 开心/悲伤/生气/平静",
+                    "default": "平静"
+                  },
+                  "aliases": {
+                    "description": "别名（逗号分隔）",
+                    "type": "string",
+                    "hint": "例如：高兴,快乐,愉悦",
+                    "default": ""
+                  },
+                  "emotion_id": {
+                    "description": "映射到网关情绪 ID",
+                    "type": "int",
+                    "hint": "优先使用 ID；0 则用情绪名",
+                    "default": 0
+                  },
+                  "emotion": {
+                    "description": "映射到网关情绪名",
+                    "type": "string",
+                    "default": ""
+                  }
+                }
+              }
             }
           }
         }
@@ -167,31 +160,32 @@
     }
   },
   "model_select": {
-    "description": "模型同步",
+    "description": "自动模型目录同步",
     "type": "object",
-    "condition": { "config_section": "音色模型" },
+    "condition": {
+      "config_section": "自动模型"
+    },
     "items": {
       "auto_sync_voices": {
-        "description": "启动时自动同步音色列表",
+        "description": "连接网关后自动补齐新增音色",
         "type": "bool",
-        "default": true
-      },
-      "auto_select_emotion": {
-        "description": "切换角色时自动选默认情绪",
-        "type": "bool",
-        "default": true
+        "default": true,
+        "hint": "从 Gateway 获取角色与情绪，写入 voices 配置；默认不覆盖手工映射"
       },
       "overwrite_on_sync": {
         "description": "同步时覆盖已有 voices 映射",
         "type": "bool",
         "default": false
       }
-    }
+    },
+    "hint": "自动同步只补齐 Gateway 新模型并保留手工映射；强制同步会按当前目录重建模板。"
   },
   "emotion_detect": {
-    "description": "LLM 情绪感知",
+    "description": "情绪检测与路由",
     "type": "object",
-    "condition": { "config_section": "情绪感知" },
+    "condition": {
+      "config_section": "情绪感知"
+    },
     "hint": "关键词 / LLM / 混合；识别结果会映射到 voices 情绪路由",
     "items": {
       "enabled": {
@@ -203,7 +197,11 @@
         "description": "识别模式",
         "type": "string",
         "default": "hybrid",
-        "options": ["keyword", "llm", "hybrid"],
+        "options": [
+          "keyword",
+          "llm",
+          "hybrid"
+        ],
         "hint": "也支持：关键词/大模型/混合 等别名"
       },
       "provider_id": {
@@ -235,13 +233,32 @@
         "description": "识别失败回退标签",
         "type": "string",
         "default": "默认"
+      },
+      "llm_api_base": {
+        "description": "LLM API 地址（可选，留空使用 AstrBot 默认 LLM）",
+        "type": "string",
+        "hint": "例如 https://api-test.pie-xian.com/v1",
+        "default": ""
+      },
+      "llm_api_key": {
+        "description": "LLM API Key（可选）",
+        "type": "string",
+        "default": ""
+      },
+      "llm_model": {
+        "description": "LLM 模型名（可选，默认 gemini-2.5-flash）",
+        "type": "string",
+        "hint": "例如 gemini-2.5-flash",
+        "default": ""
       }
     }
   },
   "filter": {
-    "description": "过滤处理",
+    "description": "文本清洗",
     "type": "object",
-    "condition": { "config_section": "过滤处理" },
+    "condition": {
+      "config_section": "文本处理"
+    },
     "hint": "代码/表情/链接/Markdown/颜文字/替换词/静音裁剪",
     "items": {
       "filter_code": {
@@ -273,19 +290,44 @@
         "description": "额外删除词（精确子串）",
         "type": "list",
         "default": [],
-        "items": { "type": "string" }
+        "items": {
+          "type": "string"
+        }
       },
       "replacement_words": {
         "description": "替换词（原词|新词）",
         "type": "list",
-        "default": ["233|哈哈哈", "666|厉害", "555|呜呜呜"],
-        "items": { "type": "string" }
+        "default": [
+          "233|哈哈哈",
+          "666|厉害",
+          "555|呜呜呜"
+        ],
+        "items": {
+          "type": "string"
+        }
       },
       "kaomoji_words": {
         "description": "颜文字关键词",
         "type": "list",
-        "default": ["ω", "Ω", "σ", "Σ", "ε", "д", "Д", "orz", "OTZ", "QAQ", "QWQ", "TAT", "TUT", "www"],
-        "items": { "type": "string" }
+        "default": [
+          "ω",
+          "Ω",
+          "σ",
+          "Σ",
+          "ε",
+          "д",
+          "Д",
+          "orz",
+          "OTZ",
+          "QAQ",
+          "QWQ",
+          "TAT",
+          "TUT",
+          "www"
+        ],
+        "items": {
+          "type": "string"
+        }
       },
       "max_repeat_count": {
         "description": "连续重复字符上限（0=不限制）",
@@ -301,40 +343,37 @@
         "description": "用语音替换原文本",
         "type": "bool",
         "default": true
-      },
-      "send_text_with_audio": {
-        "description": "语音同时附带文本",
-        "type": "bool",
-        "default": false
       }
     }
   },
   "split": {
-    "description": "分段发送",
+    "description": "分段、断句与消息投递",
     "type": "object",
-    "condition": { "config_section": "分段发送" },
-    "hint": "借鉴 splitter：按句切分、延迟、逐段 TTS",
+    "condition": {
+      "config_section": "分段发送"
+    },
+    "hint": "只按完整句末标点切分；短句不合并，超过原 max_segments 也不会把多句合并。每句按顺序单独 TTS。",
     "items": {
       "enabled": {
         "description": "启用分段",
         "type": "bool",
         "default": true
       },
-      "max_segments": {
-        "description": "最大段数",
-        "type": "int",
-        "default": 5
-      },
-      "min_segment_length": {
-        "description": "过短段合并阈值（字）",
-        "type": "int",
-        "default": 8
-      },
       "split_chars": {
-        "description": "分段分隔符",
+        "description": "句末标点",
         "type": "list",
-        "default": ["。", "？", "！", "?", "!", "；", ";", "\\n", "…"],
-        "items": { "type": "string" }
+        "default": [
+          "。",
+          "？",
+          "！",
+          "?",
+          "!",
+          "…",
+          "."
+        ],
+        "items": {
+          "type": "string"
+        }
       },
       "protect_pairs": {
         "description": "保护未闭合引号/括号内不分段",
@@ -345,21 +384,28 @@
         "description": "段间发送速度",
         "type": "string",
         "default": "自然",
-        "options": ["自然", "快速", "慢速", "固定", "随机"],
+        "options": [
+          "自然",
+          "快速",
+          "慢速",
+          "固定",
+          "随机"
+        ],
         "hint": "也支持 fast/slow/natural 等英文别名"
       },
-      "tts_each_segment": {
-        "description": "每一段都合成语音",
+      "send_text_with_audio": {
+        "description": "发送文本与音频",
         "type": "bool",
-        "default": true,
-        "hint": "关闭则整段一次合成"
+        "default": false
       }
     }
   },
   "warmup": {
     "description": "预热",
     "type": "object",
-    "condition": { "config_section": "预热触发" },
+    "condition": {
+      "config_section": "预热"
+    },
     "hint": "模型休眠时文本降级，热机后恢复 TTS",
     "items": {
       "enabled": {
@@ -376,6 +422,40 @@
         "description": "状态缓存秒数",
         "type": "int",
         "default": 8
+      }
+    }
+  },
+  "trigger": {
+    "description": "自动播报触发策略",
+    "type": "object",
+    "condition": {
+      "config_section": "触发策略"
+    },
+    "hint": "全局启用时使用禁用会话列表；全局关闭时使用启用会话列表。",
+    "items": {
+      "global_enable": {
+        "description": "全局自动播报",
+        "type": "bool",
+        "default": true
+      },
+      "prob": {
+        "description": "播报概率",
+        "type": "float",
+        "default": 1,
+        "min": 0,
+        "max": 1
+      },
+      "text_limit": {
+        "description": "自动播报最大字符数（0=不限）",
+        "type": "int",
+        "default": 300,
+        "min": 0
+      },
+      "cooldown": {
+        "description": "同一会话冷却秒数",
+        "type": "int",
+        "default": 0,
+        "min": 0
       }
     }
   }

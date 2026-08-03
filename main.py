@@ -199,7 +199,7 @@ class SessionState:
     "genie-tts",
     "victical",
     "基于 Genie TTS Gateway 的语音合成插件",
-    "2.4.0",
+    "2.4.1",
     "https://github.com/Qiscard/astrbot_plugin_genie-tts",
 )
 class GenieTTSPlugin(Star):
@@ -274,16 +274,19 @@ class GenieTTSPlugin(Star):
         self.base_url = self._normalize_base_url(str(raw_base), self.config.get("server_port"))
         self.api_key = str(self.config.get("api_key", "") or "").strip()
 
-        # —— 基础配置（兼容 gateway / simple_settings / 顶层）——
-        self.character = str(
+        # —— 基础配置（历史 gateway/simple_settings 仅作迁移兼容）——
+        raw_character = str(
             self._get_cfg(
                 "character",
-                self.config.get("character") or self.config.get("character_name") or "lxh",
+                self.config.get("character") or self.config.get("character_name") or "auto",
                 "basic", "gateway", "simple_settings",
-            ) or "lxh"
+            ) or "auto"
         ).strip()
-        lang_raw = self._get_cfg("language", self.config.get("language", "zh"), "basic", "gateway")
-        self.language = match_language(lang_raw, "zh")
+        self._character_auto = norm_key(raw_character) in {"", "auto", "automatic", "自动", "default", "默认"}
+        self.character = "" if self._character_auto else raw_character
+        lang_raw = self._get_cfg("language", self.config.get("language", "auto"), "basic", "gateway")
+        self._language_auto = norm_key(lang_raw) in {"", "auto", "automatic", "自动", "default", "默认"}
+        self.language = "zh" if self._language_auto else match_language(lang_raw, "zh")
         self.emotion_id = _as_int(
             self._get_cfg("emotion_id", self.config.get("emotion_id", 0), "basic", "gateway"), 0
         )
@@ -302,7 +305,6 @@ class GenieTTSPlugin(Star):
                 v["emotion_routes"] = parse_emotion_routes(v.get("emotion_routes"))
 
         self.auto_sync_voices = _as_bool(self._get_cfg("auto_sync_voices", True, "model_select"), True)
-        self.auto_select_emotion = _as_bool(self._get_cfg("auto_select_emotion", True, "model_select"), True)
         self.overwrite_on_sync = _as_bool(self._get_cfg("overwrite_on_sync", False, "model_select"), False)
 
         self.emotion_detect_enabled = _as_bool(self._get_cfg("enabled", True, "emotion_detect"), True)
@@ -323,7 +325,11 @@ class GenieTTSPlugin(Star):
         )
         self.emotion_smooth = _as_bool(self._get_cfg("smooth", True, "emotion_detect"), True)
 
-        self.split_sentence = _as_bool(self._get_cfg("split_sentence", True, "basic", "gateway"), True)
+        # 独立 LLM 配置（优先于 AstrBot provider）
+        self.llm_api_base = str(self._get_cfg("llm_api_base", "", "emotion_detect") or "").strip()
+        self.llm_api_key = str(self._get_cfg("llm_api_key", "", "emotion_detect") or "").strip()
+        self.llm_model = str(self._get_cfg("llm_model", "", "emotion_detect") or "").strip()
+
         self.save_on_server = _as_bool(self._get_cfg("save_on_server", False, "basic", "gateway"), False)
         basic = self._cat("basic") or self._cat("gateway")
         self.timeout = max(10, _as_int(basic.get("timeout", self.config.get("timeout", 300)), 300))
@@ -332,15 +338,12 @@ class GenieTTSPlugin(Star):
             self._get_cfg("auto_check_on_start", True, "basic", "gateway"), True
         )
 
-        self.enable_auto_tts = _as_bool(
-            self._get_cfg("enable_auto_tts", True, "basic", "simple_settings"), True
-        )
         self.global_enable = _as_bool(
-            self._get_cfg("global_enable", True, "basic", "trigger", "gateway"), True
+            self._get_cfg("global_enable", True, "trigger", "basic", "gateway"), True
         )
-        self.prob = _as_float(self._get_cfg("prob", 1.0, "basic", "trigger"), 1.0)
-        self.text_limit = _as_int(self._get_cfg("text_limit", 300, "basic", "trigger", "simple_settings"), 300)
-        self.cooldown = _as_int(self._get_cfg("cooldown", 0, "basic", "trigger"), 0)
+        self.prob = _as_float(self._get_cfg("prob", 1.0, "trigger", "basic"), 1.0)
+        self.text_limit = _as_int(self._get_cfg("text_limit", 300, "trigger", "basic", "simple_settings"), 300)
+        self.cooldown = _as_int(self._get_cfg("cooldown", 0, "trigger", "basic"), 0)
 
         # —— 过滤 ——
         self.filter_code = _as_bool(self._get_cfg("filter_code", True, "filter", "text_process"), True)
@@ -351,7 +354,7 @@ class GenieTTSPlugin(Star):
         self.trim_silence = _as_bool(self._get_cfg("trim_silence", True, "filter", "text_process"), True)
         self.replace_text = _as_bool(self._get_cfg("replace_text", True, "filter", "text_process"), True)
         self.send_text_with_audio = _as_bool(
-            self._get_cfg("send_text_with_audio", False, "filter", "text_process"), False
+            self._get_cfg("send_text_with_audio", False, "split", "filter", "text_process"), False
         )
         self.clean_before_items = [
             str(x) for x in (self._get_cfg("clean_before_items", [], "filter", "text_process") or [])
@@ -389,13 +392,17 @@ class GenieTTSPlugin(Star):
 
         # —— 分段 ——
         self.split_enabled = _as_bool(self._get_cfg("enabled", True, "split"), True)
-        self.max_segments = max(1, _as_int(self._get_cfg("max_segments", 5, "split"), 5))
-        self.min_segment_length = max(1, _as_int(self._get_cfg("min_segment_length", 8, "split"), 8))
+        # 保留旧字段读取兼容，但不再按段数或长度合并完整句子。
+        self.max_segments = 0
+        self.min_segment_length = 0
         sc = self._get_cfg("split_chars", DEFAULT_SPLIT_CHARS, "split") or DEFAULT_SPLIT_CHARS
         self.split_chars = list(sc) if isinstance(sc, (list, tuple)) else list(DEFAULT_SPLIT_CHARS)
         self.protect_pairs = _as_bool(self._get_cfg("protect_pairs", True, "split"), True)
         self.send_speed = match_send_speed(self._get_cfg("send_speed", "自然", "split"), "自然")
-        self.tts_each_segment = _as_bool(self._get_cfg("tts_each_segment", True, "split"), True)
+        # 分段模式固定为逐句顺序 TTS，不再提供多句合成开关。
+        self.tts_each_segment = True
+        # 本地已经按完整句子顺序合成，禁止 Gateway 对单句再次拆分。
+        self.split_sentence = False
 
 
     @staticmethod
@@ -437,38 +444,13 @@ class GenieTTSPlugin(Star):
                 self.config["config_mode"] = self.config["config_section"]
             self.config["base_url"] = self.base_url
             self.config["api_key"] = self.api_key
-            self.config["character"] = self.character
-            self.config["language"] = self.language
-            self.config["emotion_id"] = self.emotion_id
-            self.config["emotion"] = self.emotion
             self.config["voices"] = self.voices
-            self.config["global_enable"] = self.global_enable
             self.config["enabled_sessions"] = self.enabled_sessions
             self.config["disabled_sessions"] = self.disabled_sessions
 
             self.config["basic"] = {
-                "character": self.character,
-                "language": self.language,
-                "emotion_id": self.emotion_id,
-                "emotion": self.emotion,
-                "split_sentence": self.split_sentence,
-                "save_on_server": self.save_on_server,
-                "timeout": self.timeout,
-                "retry_attempts": self.retry_attempts,
-                "auto_check_on_start": self.auto_check_on_start,
-                "enable_auto_tts": self.enable_auto_tts,
-                "global_enable": self.global_enable,
-                "prob": self.prob,
-                "text_limit": self.text_limit,
-                "cooldown": self.cooldown,
-            }
-            # 兼容旧 gateway
-            self.config["gateway"] = {
-                "character": self.character,
-                "language": self.language,
-                "emotion_id": self.emotion_id,
-                "emotion": self.emotion,
-                "split_sentence": self.split_sentence,
+                "character": "auto" if self._character_auto else self.character,
+                "language": "auto" if self._language_auto else self.language,
                 "save_on_server": self.save_on_server,
                 "timeout": self.timeout,
                 "retry_attempts": self.retry_attempts,
@@ -476,7 +458,6 @@ class GenieTTSPlugin(Star):
             }
             self.config["model_select"] = {
                 "auto_sync_voices": self.auto_sync_voices,
-                "auto_select_emotion": self.auto_select_emotion,
                 "overwrite_on_sync": self.overwrite_on_sync,
             }
             self.config["emotion_detect"] = {
@@ -488,6 +469,9 @@ class GenieTTSPlugin(Star):
                 "mode": self.emotion_mode,
                 "keyword_threshold": self.emotion_keyword_threshold,
                 "smooth": self.emotion_smooth,
+                "llm_api_base": self.llm_api_base,
+                "llm_api_key": self.llm_api_key,
+                "llm_model": self.llm_model,
             }
             self.config["filter"] = {
                 "filter_code": self.filter_code,
@@ -501,17 +485,13 @@ class GenieTTSPlugin(Star):
                 "max_repeat_count": self.max_repeat_count,
                 "trim_silence": self.trim_silence,
                 "replace_text": self.replace_text,
-                "send_text_with_audio": self.send_text_with_audio,
             }
-            self.config["text_process"] = dict(self.config["filter"])
             self.config["split"] = {
                 "enabled": self.split_enabled,
-                "max_segments": self.max_segments,
-                "min_segment_length": self.min_segment_length,
                 "split_chars": self.split_chars,
                 "protect_pairs": self.protect_pairs,
                 "send_speed": self.send_speed,
-                "tts_each_segment": self.tts_each_segment,
+                "send_text_with_audio": self.send_text_with_audio,
             }
             self.config["warmup"] = {
                 "enabled": self.warmup_mode,
@@ -524,6 +504,11 @@ class GenieTTSPlugin(Star):
                 "text_limit": self.text_limit,
                 "cooldown": self.cooldown,
             }
+            for legacy_key in (
+                "character", "language", "emotion_id", "emotion", "global_enable",
+                "gateway", "simple_settings", "text_process", "enable_auto_tts",
+            ):
+                self.config.pop(legacy_key, None)
             if hasattr(self.config, "save_config"):
                 self.config.save_config()
             elif hasattr(self.config, "save"):
@@ -584,13 +569,19 @@ class GenieTTSPlugin(Star):
             me = await self._api_json("GET", "/api/v1/me")
             logger.info(f"[GenieTTS] key ok: {me}")
             await self._refresh_catalog(force=True)
-            # 首次自动同步音色层叠配置
-            if self.auto_sync_voices and (not self.voices):
-                n = self._sync_voices_from_catalog(overwrite=False, persist=True)
-                logger.info(f"[GenieTTS] 首次同步音色配置 {n} 个模型，请在面板查看/微调后重载插件")
+            # 每次成功连接后补齐网关中新发现的模型；默认保留手工维护的映射。
+            if self.auto_sync_voices:
+                n = self._sync_voices_from_catalog(
+                    overwrite=self.overwrite_on_sync,
+                    persist=True,
+                )
+                if n:
+                    logger.info(
+                        f"[GenieTTS] 已同步 {n} 个新增音色模型到 voices 配置，请在面板查看/微调后重载插件"
+                    )
             elif self.voices:
                 self._voices_synced = True
-            self._apply_voice_defaults_from_profile()
+            self._apply_catalog_defaults(persist=True)
             await self._fetch_public_status(force=True)
             self._ready = True
             self._last_error = ""
@@ -634,6 +625,42 @@ class GenieTTSPlugin(Star):
             logger.warning(f"[GenieTTS] emotions 拉取失败: {e}")
         self._emotions_cache = cache
 
+    def _apply_catalog_defaults(self, persist: bool = True) -> bool:
+        """用网关目录补全 auto 角色、语言和默认参考音频。"""
+        characters = [item for item in self._characters_cache if isinstance(item, dict)]
+        names = [str(item.get("name") or item.get("character") or "").strip() for item in characters]
+        names = [name for name in names if name]
+        if not names:
+            return False
+        default_character = next(
+            (
+                str(item.get("name") or item.get("character") or "").strip()
+                for item in characters
+                if item.get("is_default")
+            ),
+            names[0],
+        )
+        changed = False
+        if self._character_auto or self.character not in names:
+            if self.character != default_character:
+                self.character = default_character
+                changed = True
+        profile = self._get_voice_profile(self.character)
+        if profile:
+            profile_language = str(profile.get("language") or "").strip().lower()
+            if self._language_auto and profile_language in {"zh", "en", "hybrid"}:
+                if self.language != profile_language:
+                    self.language = profile_language
+                    changed = True
+            if not self.emotion_id and not self.emotion:
+                emotion_id = _as_int(profile.get("default_emotion_id"), 0)
+                emotion = str(profile.get("default_emotion") or "")
+                if emotion_id or emotion:
+                    self.emotion_id, self.emotion = emotion_id, emotion
+                    changed = True
+        if changed and persist:
+            self._persist()
+        return changed
 
     def _get_voice_profile(self, character: Optional[str] = None) -> Optional[Dict[str, Any]]:
         character = (character or self.character or "").strip()
@@ -684,11 +711,15 @@ class GenieTTSPlugin(Star):
                 "emotion": default_name,
             })
 
+        default_language = match_language(
+            next((e.get("language") for e in emos if e.get("is_default")), "zh"),
+            "zh",
+        )
         return {
             "__template_key": "voice",
             "character": name,
             "enabled": True,
-            "language": "zh",
+            "language": default_language,
             "default_emotion_id": default_id,
             "default_emotion": default_name,
             "emotion_routes": routes,
@@ -714,21 +745,13 @@ class GenieTTSPlugin(Star):
         for name, v in existing.items():
             if name and name not in gateway_names and not overwrite:
                 new_list.append(v)
+        changed = new_list != self.voices
         self.voices = new_list
         self.config["voices"] = new_list
         self._voices_synced = True
-        if persist: self._persist()
+        if persist and changed:
+            self._persist()
         return count
-
-    def _apply_voice_defaults_from_profile(self) -> None:
-        prof = self._get_voice_profile(self.character)
-        if not prof: return
-        if not self.emotion_id and not self.emotion:
-            self.emotion_id = _as_int(prof.get("default_emotion_id"), 0)
-            self.emotion = str(prof.get("default_emotion") or "")
-        lang = str(prof.get("language") or "").strip().lower()
-        if lang in {"zh", "en", "hybrid"}:
-            self.language = lang
 
 
     def _resolve_emotion_from_label(self, character: str, label: str) -> Tuple[int, str, str]:
@@ -891,9 +914,15 @@ class GenieTTSPlugin(Star):
         return label
 
     async def _detect_emotion_by_llm(self, text: str, character: str) -> str:
+        # 优先使用独立 LLM 配置（直调 OpenAI 兼容 API）
+        if self.llm_api_base and self.llm_api_key:
+            return await self._detect_emotion_by_standalone_llm(text, character)
+        if self.llm_api_base or self.llm_api_key:
+            logger.warning("[GenieTTS] 独立 LLM 配置不完整，回退到 AstrBot provider")
+        # fallback: AstrBot provider system
         provider = self._get_emotion_provider()
         if not provider:
-            logger.warning("[GenieTTS] 无可用 LLM，跳过情绪识别")
+            logger.warning("[GenieTTS] 无可用 LLM（独立配置/AstrBot provider 均不可用），跳过情绪识别")
             return ""
 
         labels = [x.strip() for x in self.emotion_labels.split(",") if x.strip()]
@@ -931,7 +960,8 @@ class GenieTTSPlugin(Star):
             raw = str(getattr(resp, "completion_text", "") or resp or "").strip()
             if raw:
                 raw = raw.splitlines()[0].strip()
-                for ch in "[]()<>\"' ":
+                _strip_chars = '[]()<>\' '
+                for ch in _strip_chars:
                     raw = raw.strip(ch)
                 for lab in labels:
                     if lab and lab in raw:
@@ -941,6 +971,57 @@ class GenieTTSPlugin(Star):
             logger.warning(f"[GenieTTS] LLM 情绪识别失败: {e}")
         return ""
 
+
+    async def _detect_emotion_by_standalone_llm(self, text: str, character: str) -> str:
+        """直调 OpenAI 兼容 API 做情绪分类（不依赖 AstrBot provider）。"""
+        labels = [x.strip() for x in self.emotion_labels.split(",") if x.strip()]
+        for x in EmotionAnalyzer.all_labels():
+            if x not in labels:
+                labels.append(x)
+        label_str = "、".join(labels[:30]) or DEFAULT_EMOTION_LABELS
+        snippet = (text or "").strip()
+        if len(snippet) > 280:
+            snippet = snippet[:280]
+        prompt = (
+            "你是中文对话情绪分类器。根据【助手回复文本】判断其表达的情绪，只输出一个标签。\n"
+            f"可选标签：{label_str}\n"
+            "要求：不要解释、不要标点、不要多写；若不明显则输出 平静。\n"
+            f"文本：{snippet}\n"
+            "标签："
+        )
+        try:
+            session = await self._get_session()
+            url = self.llm_api_base.rstrip("/") + "/chat/completions"
+            model = self.llm_model or "gemini-2.5-flash"
+            body = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "只输出情绪标签。"},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 16,
+                "temperature": 0.0,
+            }
+            headers = {"Authorization": f"Bearer {self.llm_api_key}", "Content-Type": "application/json"}
+            timeout = aiohttp.ClientTimeout(total=self.emotion_timeout, connect=10)
+            async with session.post(url, json=body, headers=headers, timeout=timeout) as resp:
+                if resp.status >= 400:
+                    detail = await resp.text()
+                    logger.warning(f"[GenieTTS] LLM API HTTP {resp.status}: {detail[:200]}")
+                    return ""
+                data = await resp.json()
+                raw = str(data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+            if raw:
+                raw = raw.splitlines()[0].strip()
+                for ch in '[]()<>\' ':
+                    raw = raw.strip(ch)
+                for lab in labels:
+                    if lab and lab in raw:
+                        return lab
+                return raw[:16]
+        except Exception as e:
+            logger.warning(f"[GenieTTS] 独立 LLM 情绪识别失败: {e}")
+        return ""
 
     def _clean_text(self, text: str) -> Tuple[str, List[str]]:
         references: List[str] = []
@@ -1061,6 +1142,7 @@ class GenieTTSPlugin(Star):
             if norm_key(hit) != norm_key(character):
                 logger.info(f"[GenieTTS] character fuzzy: {character!r} -> {hit!r} score={sc}")
             character = hit
+        self._character_auto = False
         self.character = character
         msg = f"角色 => {character}"
         if auto_emotion:
@@ -1302,16 +1384,12 @@ class GenieTTSPlugin(Star):
         self._last_error = str(last_error) if last_error else "unknown"
         raise RuntimeError(f"音频生成失败: {self._last_error}")
 
-    @filter.on_decorating_result()
-
     def _split_reply_text(self, text: str) -> List[str]:
         if not self.split_enabled:
             return [text] if text else []
         return split_plain_text(
             text,
             split_chars=self.split_chars,
-            max_segments=self.max_segments,
-            min_segment_length=self.min_segment_length,
             protect_pairs=self.protect_pairs,
         )
 
@@ -1350,12 +1428,12 @@ class GenieTTSPlugin(Star):
             logger.warning(f"[GenieTTS] 分段合成失败，回退文本: {e}")
             return [Comp.Plain(text)]
 
+    @filter.on_decorating_result()
     async def on_decorating_result(self, event: AstrMessageEvent, *args):
         try:
             if not self.api_key:
                 return
-            if not getattr(self, "enable_auto_tts", True):
-                return
+
             result = event.get_result()
             if not result or not getattr(result, "chain", None):
                 return
@@ -1418,10 +1496,6 @@ class GenieTTSPlugin(Star):
             segments = self._split_reply_text(cleaned)
             if not segments:
                 return
-            # 关闭分段 TTS 时：整段一次合成（仍可在预热期文本分段）
-            if (not self.tts_each_segment) and ready:
-                segments = [cleaned]
-
             # 预热中：仅文本分段发送（模拟真人节奏）
             if text_only:
                 if self.warmup_tip:
@@ -1473,7 +1547,7 @@ class GenieTTSPlugin(Star):
     @gentts_group.command("help", alias={"帮助", "h", "?"})
     async def cmd_help(self, event: AstrMessageEvent):
         yield event.plain_result(
-            "🎙️ Genie TTS v2.4\n"
+            "🎙️ Genie TTS v2.4.1\n"
             "分类：基础配置 / 音色模型 / 情绪感知 / 过滤处理 / 分段发送 / 预热触发\n"
             "gentts test <文本> | filter <文本> | split <文本>\n"
             "gentts emotion <文本>  情绪预览（支持别名）\n"
@@ -1603,10 +1677,56 @@ class GenieTTSPlugin(Star):
             f"🎭 角色={opts.get('character')} 情绪={opts.get('emotion_id') or opts.get('emotion') or '默认'} 语言={opts.get('language')}\n"
             f"📚 音色配置: {len(self.voices)} 个 | 同步: {'是' if self._voices_synced or self.voices else '否'}\n"
             f"🧠 情绪识别: {'开' if self.emotion_detect_enabled else '关'}({self.emotion_mode}) 平滑={'开' if self.emotion_smooth else '关'} | 颜文字: {'开' if self.filter_kaomoji else '关'}\n"
-            f"✂️ 分段: {'开' if self.split_enabled else '关'} max={self.max_segments} 速度={self.send_speed} 逐段TTS={'开' if self.tts_each_segment else '关'}\n"
+            f"✂️ 分段: {'开' if self.split_enabled else '关'} 完整句逐句TTS 速度={self.send_speed}\n"
             f"⚙️ 配置分类: {self.config_section}\n"
             f"⚡ 会话: {'启用' if enabled else '禁用'} ({mode}) 概率={self.prob} 限制={self.text_limit or '无'}{last}"
         )
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("genietest")
+    async def cmd_genie_test(self, event: AstrMessageEvent):
+        """全面测试：Gateway 连通性 + LLM 配置 + 情绪识别链路。"""
+        lines = ["🔧 Genie TTS 全面测试\n"]
+        try:
+            data = await self._api_json("GET", "/health")
+            lines.append("✅ Gateway /health: OK")
+        except Exception as e:
+            lines.append(f"❌ Gateway /health 失败: {e}")
+            yield event.plain_result("\n".join(lines))
+            return
+        try:
+            me = await self._api_json("GET", "/api/v1/me")
+            valid = me.get("valid", "ok") if isinstance(me, dict) else "ok"
+            lines.append(f"✅ Gateway /me: key_valid={valid}")
+        except Exception as e:
+            lines.append(f"❌ Gateway /me 失败: {e}")
+        try:
+            cats = await self._api_json("GET", "/api/v1/characters")
+            chars = [c.get("name", c.get("character", "?")) for c in (cats.get("characters", cats) or [])]
+            lines.append(f"✅ 角色: {', '.join(chars) if chars else '(无)'}")
+        except Exception as e:
+            lines.append(f"❌ 角色列表失败: {e}")
+        if self.llm_api_base and self.llm_api_key:
+            lines.append(f"🧠 独立 LLM: 已配置 ({self.llm_model or 'gemini-2.5-flash'}) @ {self.llm_api_base}")
+        elif self.emotion_provider_id:
+            lines.append(f"🧠 AstrBot LLM: source_id={self.emotion_provider_id}")
+        else:
+            lines.append("🧠 LLM: 未配置独立 LLM，将使用 AstrBot 默认 provider")
+        test_text = "哇，真的太棒了！我好开心啊！"
+        try:
+            label = await self._detect_emotion_by_llm(test_text, self.character)
+            lines.append(f"🧪 LLM 情绪测试(\"{test_text}\"): {label or '(失败)'}")
+        except Exception as e:
+            lines.append(f"🧪 LLM 情绪测试失败: {e}")
+        kw_emo, conf, _ = EmotionAnalyzer.analyze(test_text)
+        lines.append(f"🔑 关键词情绪: {kw_emo.value if kw_emo else '无'} conf={conf:.2f}")
+        try:
+            full_label = await self._detect_emotion_label(test_text, self.character, sid="test")
+            eid, ename, matched = self._resolve_emotion_from_label(self.character, full_label)
+            lines.append(f"🎯 完整链路: {full_label} -> {eid}:{ename} (matched={matched})")
+        except Exception as e:
+            lines.append(f"🎯 完整链路失败: {e}")
+        yield event.plain_result("\n".join(lines))
 
     @gentts_group.command("sync", alias={"同步"})
     async def cmd_sync(self, event: AstrMessageEvent, mode: str = ""):
@@ -1614,7 +1734,7 @@ class GenieTTSPlugin(Star):
             await self._refresh_catalog(force=True)
             force = str(mode or "").strip().lower() in {"force", "overwrite", "强制", "覆盖"}
             n = self._sync_voices_from_catalog(overwrite=force or self.overwrite_on_sync, persist=True)
-            self._apply_voice_defaults_from_profile()
+            self._apply_catalog_defaults(persist=True)
             yield event.plain_result(
                 f"✅ 已同步网关模型到配置 voices\n"
                 f"更新/写入: {n} 个 | 当前共 {len(self.voices)} 个\n"
@@ -1755,7 +1875,11 @@ class GenieTTSPlugin(Star):
             value = value.lower()
             if value not in {"zh", "en", "hybrid"}:
                 yield event.plain_result("仅 zh/en/hybrid"); return
-            if global_set: self.language = value; self._persist(); yield event.plain_result(f"✅ 全局语言 {value}")
+            if global_set:
+                self._language_auto = False
+                self.language = value
+                self._persist()
+                yield event.plain_result(f"✅ 全局语言 {value}")
             else: state.language = value; yield event.plain_result(f"✅ 会话语言 {value}")
             return
         if field in {"emotion", "emo", "情绪", "emotion_id"}:

@@ -1,0 +1,95 @@
+{
+  "config_section": "分段发送",
+  "base_url": "http://127.0.0.1:19880",
+  "api_key": "",
+  "basic": {
+    "character": "auto",
+    "language": "auto",
+    "save_on_server": true,
+    "timeout": 300,
+    "retry_attempts": 3,
+    "auto_check_on_start": true
+  },
+  "voices": [],
+  "model_select": {
+    "auto_sync_voices": true,
+    "overwrite_on_sync": false
+  },
+  "emotion_detect": {
+    "enabled": true,
+    "mode": "hybrid",
+    "provider_id": "",
+    "labels": "开心,悲伤,生气,兴奋,平静,困惑,无聊,好奇,惊讶,焦虑,默认",
+    "keyword_threshold": 0.55,
+    "smooth": true,
+    "timeout": 12,
+    "fallback_label": "默认",
+    "llm_api_base": "",
+    "llm_api_key": "",
+    "llm_model": ""
+  },
+  "filter": {
+    "filter_code": true,
+    "filter_emoji": true,
+    "filter_url": true,
+    "filter_markdown": true,
+    "filter_kaomoji": true,
+    "clean_before_items": [],
+    "replacement_words": [
+      "233|哈哈哈",
+      "666|厉害",
+      "999|很棒",
+      "555|呜呜呜"
+    ],
+    "kaomoji_words": [
+      "ω",
+      "Ω",
+      "σ",
+      "Σ",
+      "ε",
+      "д",
+      "Д",
+      "´",
+      "",
+      "＝",
+      "∀",
+      "∇",
+      "orz",
+      "OTZ",
+      "QAQ",
+      "QWQ",
+      "TAT",
+      "TUT",
+      "www"
+    ],
+    "max_repeat_count": 2,
+    "trim_silence": true,
+    "replace_text": true
+  },
+  "split": {
+    "enabled": true,
+    "split_chars": [
+      "。",
+      "？",
+      "！",
+      "?",
+      "!",
+      "…",
+      "."
+    ],
+    "protect_pairs": true,
+    "send_speed": "自然",
+    "send_text_with_audio": false
+  },
+  "warmup": {
+    "enabled": true,
+    "show_tip": false,
+    "status_ttl": 8
+  },
+  "trigger": {
+    "global_enable": true,
+    "prob": 1,
+    "text_limit": 300,
+    "cooldown": 0
+  }
+}

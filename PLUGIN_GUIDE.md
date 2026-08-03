@@ -261,3 +261,8 @@ Gateway 模型处于休眠或未加载时：
 - 不要在群聊或日志中发送 API Key。
 - Gateway 的 `save_on_server` 记录包含文本和音频，应按隐私策略清理。
 - 管理员 API Key 仅用于 `/api/admin/*` 和 `/api/control/*`，日常 AstrBot 插件建议使用非管理员 Key。
+
+## 11. 致谢
+
+- TTS 情绪路由参考：[muyouzhi6/astrbot_plugin_tts_emotion_router](https://github.com/muyouzhi6/astrbot_plugin_tts_emotion_router)
+- 分段过滤参考：[nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter)

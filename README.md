@@ -30,3 +30,8 @@ AstrBot 的 Genie TTS Gateway 插件，提供角色与情绪自动同步、情�
 - `gentts reload`：重新读取插件配置。
 
 完整配置、情绪路由和接口说明见 [PLUGIN_GUIDE.md](./PLUGIN_GUIDE.md)。
+
+## 致谢
+
+- TTS 情绪路由参考：[muyouzhi6/astrbot_plugin_tts_emotion_router](https://github.com/muyouzhi6/astrbot_plugin_tts_emotion_router)
+- 分段过滤参考：[nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter)

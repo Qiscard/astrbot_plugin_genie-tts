@@ -1385,6 +1385,9 @@ class GenieTTSPlugin(Star):
         raise RuntimeError(f"音频生成失败: {self._last_error}")
 
     def _split_reply_text(self, text: str) -> List[str]:
+        if not isinstance(text, str):
+            logger.warning("[GenieTTS] 忽略非文本分段输入: %s", type(text).__name__)
+            return []
         if not self.split_enabled:
             return [text] if text else []
         return split_plain_text(

@@ -88,7 +88,9 @@ def split_text(
     protect_pairs: bool = True,
 ) -> List[str]:
     """按完整句末标点分句，不合并短句，也不按数量重切。"""
-    text = (text or "").strip()
+    if not isinstance(text, str):
+        return []
+    text = text.strip()
     if not text:
         return []
 
